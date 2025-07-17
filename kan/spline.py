@@ -115,8 +115,10 @@ def curve2coef(x_eval, y_eval, grid, k):
     #coef = torch.linalg.lstsq(mat, y_eval, driver='gelsy' if device == 'cpu' else 'gels').solution[:,:,:,0]
     try:
         coef = torch.linalg.lstsq(mat, y_eval).solution[:,:,:,0]
+        return coef
     except:
         print('lstsq failed')
+        return
     
     # manual psuedo-inverse
     '''lamb=1e-8
@@ -128,7 +130,7 @@ def curve2coef(x_eval, y_eval, grid, k):
     B = Xty
     coef = (A.pinverse() @ B)[:,:,:,0]'''
     
-    return coef
+    # return coef
 
 
 def extend_grid(grid, k_extend=0):

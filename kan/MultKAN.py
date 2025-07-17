@@ -1548,8 +1548,8 @@ class MultKAN(nn.Module):
             train_id = np.random.choice(dataset['train_input'].shape[0], batch_size, replace=False)
             test_id = np.random.choice(dataset['test_input'].shape[0], batch_size_test, replace=False)
 
-            if _ % grid_update_freq == 0 and _ < stop_grid_update_step and update_grid and _ >= start_grid_update_step:
-                self.update_grid(dataset['train_input'][train_id])
+            # if _ % grid_update_freq == 0 and _ < stop_grid_update_step and update_grid and _ >= start_grid_update_step:
+            #     self.update_grid(dataset['train_input'][train_id])
 
             if opt == "LBFGS":
                 optimizer.step(closure)

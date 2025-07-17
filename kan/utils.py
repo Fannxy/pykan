@@ -118,7 +118,9 @@ def create_dataset(f,
     test_input = torch.zeros(test_num, n_var)
     for i in range(n_var):
         train_input[:,i] = torch.rand(train_num,)*(ranges[i,1]-ranges[i,0])+ranges[i,0]
-        test_input[:,i] = torch.rand(test_num,)*(ranges[i,1]-ranges[i,0])+ranges[i,0]
+        # test_input[:,i] = torch.rand(test_num,)*(ranges[i,1]-ranges[i,0])+ranges[i,0]
+        test_input[:, i] = torch.linspace(ranges[i, 0], ranges[i, 1], steps=test_num)
+        
                 
     if f_mode == 'col':
         train_label = f(train_input)
