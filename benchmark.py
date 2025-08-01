@@ -1,4 +1,7 @@
-from kan import *
+import os, sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+__package__ = "pykan"
+from pykan.kan import *
 import numpy as np
 import pandas as pd 
 import time
@@ -226,7 +229,6 @@ def kan_build(func, n_var, train_num, test_num, ranges, neurons=[5], sample_meth
     if sample_method == "chebyshev":
         # Create dataset using Chebyshev nodes
         dataset = create_dataset_chebyshev(func, n_var=n_var, train_num=train_num, test_num=test_num, ranges=ranges, device=device)
-        print("generate in this function!")
     elif sample_method == "random":
         # Create dataset using random sampling
         dataset = create_dataset(func, n_var=n_var, train_num=train_num, test_num=test_num, ranges=ranges, device=device)
@@ -443,8 +445,8 @@ funcs6d = {
 
 test_cases = {
     "2d": (2, funcs2d),
-    # "3d": (3, funcs3d),
-    # "6d": (6, funcs6d),
+    "3d": (3, funcs3d),
+    "6d": (6, funcs6d),
 }
 
 if __name__ == "__main__":

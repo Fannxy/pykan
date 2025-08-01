@@ -1,4 +1,9 @@
-from benchmark import *
+import os, sys
+# 将 pykan 的父目录（即项目根目录）加入到 sys.path 中
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+__package__ = "pykan"
+
+from pykan.benchmark import *
 
 def obtain_b_splines(model, to_cpu=True):
     """Obtain the B-spline coefficients from the model."""
