@@ -1,4 +1,5 @@
 import os, sys
+import pickle
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 __package__ = "pykan"
 from pykan.kan import *
@@ -9,6 +10,11 @@ import torch
 import itertools
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D  # 必须导入
+import random
+random.seed(42)
+
+ROOT_FOLDER = "/root/NFGen_multi-variable/BasicBenchmark/"
+KAN_MODEL_FOLDER = ROOT_FOLDER + "kan_models/"
 
 
 def func1(x):
@@ -219,7 +225,7 @@ def create_dataset_chebyshev(f,
     
     return dataset
 
-def kan_build(func, n_var, train_num, test_num, ranges, neurons=[5], sample_method="chebyshev"):
+def kan_build(func, n_var, train_num, test_num, ranges, neurons=[5], sample_method="chebyshev", grid=5, k=8):
     # Build a KAN model for the given function
     
     torch.set_default_dtype(torch.float64)
@@ -234,7 +240,7 @@ def kan_build(func, n_var, train_num, test_num, ranges, neurons=[5], sample_meth
         dataset = create_dataset(func, n_var=n_var, train_num=train_num, test_num=test_num, ranges=ranges, device=device)
         
     width = [n_var] + neurons + [1]
-    model = KAN(width=width, grid=5, k=8, seed=2, device=device)
+    model = KAN(width=width, grid=grid, k=k, seed=2, device=device)
     
     loss_result = model.fit(dataset, opt="LBFGS", steps=20)
     
@@ -250,8 +256,8 @@ def model_evaluate(model, data, zero_mask = 1e-3):
     abs_error = torch.sqrt((model_predict - data["test_label"])**2)
     relative_error = torch.where(
         torch.abs(data["test_label"]) >= zero_mask,  # 条件：y_true >= zero_mask
-        abs_error / torch.abs(data["test_label"]),  # 如果条件满足，计算相对误差
-        abs_error  # 如果条件不满足，直接使用绝对误差
+        abs_error / torch.abs(data["test_label"]),
+        abs_error 
     )
     mean_relative_error = torch.mean(relative_error)
     maximum_relative_error = torch.max(relative_error)
@@ -451,8 +457,9 @@ test_cases = {
 
 if __name__ == "__main__":
     
-    sample_method_list = ["chebyshev", "random"] # "chebyshev" or "random" training data sample method
-    neurons_list = [3, 5, 7, 9] # one paramemter, middle layer neurons. Now, all the KAN is [n_var, middle_neurons, 1] structure. For each neuron, the parameter is (8 orders, 5 grids), which can be seen in function kan_build.
+    sample_method_list = ["chebyshev"] # "chebyshev" or "random" training data sample method
+    # neurons_list = [3, 5, 7, 9] # one paramemter, middle layer neurons. Now, all the KAN is [n_var, middle_neurons, 1] structure. For each neuron, the parameter is (8 orders, 5 grids), which can be seen in function kan_build.
+    neurons_list = [5]
     
     for sample_method in sample_method_list:
         for middle_neurons in neurons_list:
@@ -488,7 +495,16 @@ if __name__ == "__main__":
                     model, data = kan_build(func, n_var=n_var, train_num=10000, test_num=1000, ranges=ranges, neurons=neurons, sample_method=sample_method)
                     end = time.time()
 
+                    data_path = f"{KAN_MODEL_FOLDER}data/{func_name}.pkl"
+                    with open(data_path, 'wb') as _f:
+                        pickle.dump(data, _f)
+
                     error_dict = model_evaluate(model, data, zero_mask=1e-6)
+                    
+                    # # directly save the model.
+                    # model_name = f"{func_name}_kan_model"
+                    # model_path = f"{KAN_MODEL_FOLDER}{model_name}"
+                    # model.saveckpt(model_path)
                     
                     # Visualize the approximation for 3D functions and the data.
                     if n_var <= 2:

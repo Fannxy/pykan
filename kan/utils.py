@@ -118,8 +118,7 @@ def create_dataset(f,
     test_input = torch.zeros(test_num, n_var)
     for i in range(n_var):
         train_input[:,i] = torch.rand(train_num,)*(ranges[i,1]-ranges[i,0])+ranges[i,0]
-        # test_input[:,i] = torch.rand(test_num,)*(ranges[i,1]-ranges[i,0])+ranges[i,0]
-        test_input[:, i] = torch.linspace(ranges[i, 0], ranges[i, 1], steps=test_num)
+        test_input[:,i] = torch.rand(test_num,)*(ranges[i,1]-ranges[i,0])+ranges[i,0]
         
                 
     if f_mode == 'col':
@@ -136,20 +135,20 @@ def create_dataset(f,
         train_label = train_label.unsqueeze(dim=1)
         test_label = test_label.unsqueeze(dim=1)
         
-    def normalize(data, mean, std):
-            return (data-mean)/std
+    # def normalize(data, mean, std):
+    #         return (data-mean)/std
             
-    if normalize_input == True:
-        mean_input = torch.mean(train_input, dim=0, keepdim=True)
-        std_input = torch.std(train_input, dim=0, keepdim=True)
-        train_input = normalize(train_input, mean_input, std_input)
-        test_input = normalize(test_input, mean_input, std_input)
+    # if normalize_input == True:
+    #     mean_input = torch.mean(train_input, dim=0, keepdim=True)
+    #     std_input = torch.std(train_input, dim=0, keepdim=True)
+    #     train_input = normalize(train_input, mean_input, std_input)
+    #     test_input = normalize(test_input, mean_input, std_input)
         
-    if normalize_label == True:
-        mean_label = torch.mean(train_label, dim=0, keepdim=True)
-        std_label = torch.std(train_label, dim=0, keepdim=True)
-        train_label = normalize(train_label, mean_label, std_label)
-        test_label = normalize(test_label, mean_label, std_label)
+    # if normalize_label == True:
+    #     mean_label = torch.mean(train_label, dim=0, keepdim=True)
+    #     std_label = torch.std(train_label, dim=0, keepdim=True)
+    #     train_label = normalize(train_label, mean_label, std_label)
+    #     test_label = normalize(test_label, mean_label, std_label)
 
     dataset = {}
     dataset['train_input'] = train_input.to(device)
