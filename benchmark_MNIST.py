@@ -5,11 +5,47 @@ import time
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset, Dataset
 from torchvision import datasets, transforms
 import matplotlib.pyplot as plt
 import os
 import random
+import math
+import datetime
+from tqdm import tqdm
+
+# Define a global log filename
+LOG_FILE = "cuda_memory_log.txt"
+
+# If log file exists, delete it for fresh run
+if os.path.exists(LOG_FILE):
+    os.remove(LOG_FILE)
+
+def log_cuda_memory(message):
+    """
+    Log current CUDA memory usage to a file.
+
+    Args:
+        message (str): Description of the current operation.
+    """
+    if not torch.cuda.is_available():
+        print("CUDA is not available.")
+        return
+
+    allocated = torch.cuda.memory_allocated() / 1024**2  # MB
+    reserved = torch.cuda.memory_reserved() / 1024**2   # MB
+    
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+    
+    log_message = (
+        f"[{timestamp}] {message}\n"
+        f"  - Allocated: {allocated:.2f} MB\n"
+        f"  - Reserved:  {reserved:.2f} MB\n"
+        f"--------------------------------------------------\n"
+    )
+    
+    with open(LOG_FILE, "a") as f:
+        f.write(log_message)
 
 
 # -----------------------------------------------------------------------------
@@ -70,119 +106,105 @@ def load_mnist_data(train_samples=50000, test_samples=10000, device='cpu'):
         device: Device to load data on
     
     Returns:
-        dataset: Dictionary with train/test inputs and labels
+        train_dataset, test_dataset
     """
     print("Loading MNIST dataset...")
     
-    # Load MNIST
-    transform = transforms.ToTensor()
-    train_dataset = datasets.MNIST(root='../data', train=True, download=True, transform=transform)
-    test_dataset = datasets.MNIST(root='../data', train=False, download=True, transform=transform)
+    # Load MNIST with normalization
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.1307,), (0.3081,))
+    ])
+    train_dataset_full = datasets.MNIST(root='../data', train=True, download=True, transform=transform)
+    test_dataset_full = datasets.MNIST(root='../data', train=False, download=True, transform=transform)
     
     # Sample data
-    if train_samples < len(train_dataset):
-        train_indices = random.sample(range(len(train_dataset)), train_samples)
-        train_dataset = torch.utils.data.Subset(train_dataset, train_indices)
+    train_indices = random.sample(range(len(train_dataset_full)), train_samples)
+    test_indices = random.sample(range(len(test_dataset_full)), test_samples)
     
-    if test_samples < len(test_dataset):
-        test_indices = random.sample(range(len(test_dataset)), test_samples)
-        test_dataset = torch.utils.data.Subset(test_dataset, test_indices)
-    
-    # Convert to tensors
-    train_loader = DataLoader(train_dataset, batch_size=len(train_dataset), shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=len(test_dataset), shuffle=False)
-    
-    train_data, train_labels = next(iter(train_loader))
-    test_data, test_labels = next(iter(test_loader))
-    
-    # Flatten images: (N, 1, 28, 28) -> (N, 784)
-    train_input = train_data.view(train_data.size(0), -1).to(device)
-    test_input = test_data.view(test_data.size(0), -1).to(device)
-    
-    # Convert labels to one-hot encoding for KAN
-    train_label = torch.zeros(train_labels.size(0), 10, device=device)
-    train_label.scatter_(1, train_labels.unsqueeze(1).to(device), 1)
-    
-    test_label = torch.zeros(test_labels.size(0), 10, device=device)
-    test_label.scatter_(1, test_labels.unsqueeze(1).to(device), 1)
-    
-    dataset = {
-        'train_input': train_input,
-        'test_input': test_input,
-        'train_label': train_label,
-        'test_label': test_label,
-        'train_labels_original': train_labels.to(device),
-        'test_labels_original': test_labels.to(device)
-    }
+    train_dataset = torch.utils.data.Subset(train_dataset_full, train_indices)
+    test_dataset = torch.utils.data.Subset(test_dataset_full, test_indices)
     
     print(f"Dataset prepared:")
-    print(f"  Train samples: {train_input.shape[0]}")
-    print(f"  Test samples: {test_input.shape[0]}")
-    print(f"  Input dimensions: {train_input.shape[1]}")
-    print(f"  Output dimensions: {train_label.shape[1]}")
+    print(f"  Train samples: {len(train_dataset)}")
+    print(f"  Test samples: {len(test_dataset)}")
     print(f"  Device: {device}")
     
-    return dataset
+    return train_dataset, test_dataset
 
 
-def train_lenet5(dataset, epochs=10, device='cpu'):
+def train_lenet5(train_dataset, epochs=10, batch_size=128, device='cpu'):
     """
     Train LeNet-5 model on MNIST.
     
     Args:
-        dataset: MNIST dataset
+        train_dataset: MNIST train dataset
         epochs: Number of training epochs
+        batch_size: Batch size for training
         device: Device to train on
     
     Returns:
         model: Trained LeNet-5 model
     """
-    print(f"Training LeNet-5 for {epochs} epochs on {device}...")
+    print(f"Training LeNet-5 for {epochs} epochs on {device} with batch_size={batch_size}...")
     
     model = LeNet5().to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     
-    # Prepare data for LeNet-5 (reshape back to images)
-    train_input = dataset['train_input'].view(-1, 1, 28, 28).to(device)
-    train_labels = dataset['train_labels_original'].to(device)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     
-    # Training loop
     model.train()
     for epoch in range(epochs):
-        optimizer.zero_grad()
-        outputs = model(train_input)
-        loss = criterion(outputs, train_labels)
-        loss.backward()
-        optimizer.step()
+        running_loss = 0.0
+        for inputs, labels in train_loader:
+            inputs = inputs.to(device)
+            labels = labels.to(device)
+            
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            
+            running_loss += loss.item()
         
         if (epoch + 1) % 5 == 0:
-            print(f"Epoch [{epoch+1}/{epochs}], Loss: {loss.item():.4f}")
+            print(f"Epoch [{epoch+1}/{epochs}], Loss: {running_loss / len(train_loader):.4f}")
     
     return model
 
 
-def evaluate_model(model, dataset, device='cpu'):
+def evaluate_model(model, test_dataset, batch_size=256, device='cpu'):
     """
     Evaluate model accuracy on test set.
     
     Args:
         model: Trained model
-        dataset: Test dataset
+        test_dataset: Test dataset
+        batch_size: Batch size for evaluation
         device: Device to evaluate on
     
     Returns:
         accuracy: Classification accuracy
     """
     model.eval()
-    with torch.no_grad():
-        test_input = dataset['test_input'].view(-1, 1, 28, 28).to(device)
-        test_labels = dataset['test_labels_original'].to(device)
-        
-        outputs = model(test_input)
-        _, predicted = torch.max(outputs.data, 1)
-        accuracy = (predicted == test_labels).sum().item() / test_labels.size(0)
     
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    
+    correct = 0
+    total = 0
+    with torch.no_grad():
+        for inputs, labels in test_loader:
+            inputs = inputs.to(device)
+            labels = labels.to(device)
+            
+            outputs = model(inputs)
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+    
+    accuracy = correct / total
     return accuracy
 
 
@@ -205,24 +227,18 @@ def get_kan_structure(model):
         structure.append(layer.width)
     return structure
 
-
-def train_kan_direct(dataset, structure, device='cpu', batch_size=256, prune=False, regularization=None):
+def train_kan_direct(train_dataset, test_dataset, structure, device='cpu', batch_size=256, prune=False, regularization=None):
     """
     Train KAN directly on MNIST data using batch processing.
     
     Args:
-        dataset: MNIST dataset
+        train_dataset: MNIST train dataset
+        test_dataset: MNIST test dataset
         structure: KAN architecture [input_dim, hidden1, hidden2, ..., output_dim]
         device: Device to train on
         batch_size: Batch size for training to handle GPU memory
         prune: Whether to apply pruning after training and retrain
         regularization: Dictionary with regularization parameters
-            - lamb: Overall penalty strength
-            - lamb_l1: L1 penalty strength  
-            - lamb_entropy: Entropy penalty strength
-            - lamb_coef: Coefficient penalty strength
-            - lamb_coefdiff: Coefficient smoothness penalty strength
-            - reg_metric: Regularization metric ('edge_forward_spline_n', 'edge_forward_spline_u', 'edge_forward_sum', 'edge_backward', 'node_backward')
     
     Returns:
         model: Trained KAN model
@@ -239,17 +255,9 @@ def train_kan_direct(dataset, structure, device='cpu', batch_size=256, prune=Fal
     pruned_structure = None
     
     # Create KAN model
-    model = KAN(width=structure, grid=5, k=7, seed=42, device=device)
+    model = KAN(width=structure, grid=5, k=6, seed=42, device=device, auto_save=False)
     
-    # Create batch dataset for training
-    train_input = dataset['train_input'].to(device)
-    train_label = dataset['train_label'].to(device)
-    
-    # Split into batches
-    num_samples = train_input.size(0)
-    num_batches = (num_samples + batch_size - 1) // batch_size
-    
-    print(f"Training with {num_batches} batches of size {batch_size}")
+    log_cuda_memory("Direct KAN training: After creating KAN model")
     
     # Set regularization parameters
     if regularization:
@@ -267,186 +275,151 @@ def train_kan_direct(dataset, structure, device='cpu', batch_size=256, prune=Fal
         lamb_coefdiff = 0.0
         reg_metric = 'edge_forward_spline_n'
     
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True)
+    
     # Train KAN with batches
-    for batch_idx in range(num_batches):
-        start_idx = batch_idx * batch_size
-        end_idx = min((batch_idx + 1) * batch_size, num_samples)
-        
+    for train_images, train_labels in train_loader:
+
+        test_images, test_labels = next(iter(test_loader))
+        test_input = test_images.view(test_images.size(0), -1).to(device)
+        test_label = test_labels.to(device)
+
+        train_input = train_images.view(train_images.size(0), -1).to(device)
+        train_label = train_labels.to(device)
         batch_dataset = {
-            'train_input': train_input[start_idx:end_idx],
-            'train_label': train_label[start_idx:end_idx],
-            'test_input': dataset['test_input'].to(device),
-            'test_label': dataset['test_label'].to(device)
+            'train_input': train_input,
+            'train_label': train_label,
+            'test_input': test_input,
+            'test_label': test_label
         }
         
-        print(f"Training batch {batch_idx + 1}/{num_batches} (samples {start_idx}-{end_idx})")
+        log_cuda_memory("Direct KAN training: After loading batch data, before training batch")
         
-        # Train on this batch with regularization
-        if batch_idx == 0:
-            # First batch: full training
-            loss_result = model.fit(
-                batch_dataset, 
-                opt="LBFGS", 
-                steps=20,
-                lamb=lamb,
-                lamb_l1=lamb_l1,
-                lamb_entropy=lamb_entropy,
-                lamb_coef=lamb_coef,
-                lamb_coefdiff=lamb_coefdiff,
-                reg_metric=reg_metric
-            )
-        else:
-            # Subsequent batches: continue training
-            loss_result = model.fit(
-                batch_dataset, 
-                opt="LBFGS", 
-                steps=10,
-                lamb=lamb,
-                lamb_l1=lamb_l1,
-                lamb_entropy=lamb_entropy,
-                lamb_coef=lamb_coef,
-                lamb_coefdiff=lamb_coefdiff,
-                reg_metric=reg_metric
-            )
-    
+        loss_result = model.fit(
+            batch_dataset, 
+            opt="LBFGS", 
+            loss_fn=nn.CrossEntropyLoss(),
+            steps=10,
+            batch=batch_size,
+            lamb=lamb,
+            lamb_l1=lamb_l1,
+            lamb_entropy=lamb_entropy,
+            lamb_coef=lamb_coef,
+            lamb_coefdiff=lamb_coefdiff,
+            reg_metric=reg_metric
+        )
+        log_cuda_memory("Direct KAN training: After training batch")
+
     # Apply pruning if requested
     if prune:
-        print("Applying pruning to the trained model...")
-        # Get activations for pruning
-        model(dataset['train_input'][:batch_size].to(device))
-        # Apply pruning with default thresholds
-        model = model.prune(node_th=1e-2, edge_th=3e-2)
-        # Get the pruned structure
-        pruned_structure = get_kan_structure(model)
-        print(f"Pruning completed. New structure: {pruned_structure}")
-        
-        # Retrain the pruned model
-        print("Retraining the pruned model...")
-        for batch_idx in range(num_batches):
-            start_idx = batch_idx * batch_size
-            end_idx = min((batch_idx + 1) * batch_size, num_samples)
-            
-            batch_dataset = {
-                'train_input': train_input[start_idx:end_idx],
-                'train_label': train_label[start_idx:end_idx],
-                'test_input': dataset['test_input'].to(device),
-                'test_label': dataset['test_label'].to(device)
-            }
-            
-            print(f"Retraining batch {batch_idx + 1}/{num_batches} (samples {start_idx}-{end_idx})")
-            
-            # Retrain on this batch with regularization
-            if batch_idx == 0:
-                # First batch: full retraining
-                loss_result = model.fit(
-                    batch_dataset, 
-                    opt="LBFGS", 
-                    steps=20,
-                    lamb=lamb,
-                    lamb_l1=lamb_l1,
-                    lamb_entropy=lamb_entropy,
-                    lamb_coef=lamb_coef,
-                    lamb_coefdiff=lamb_coefdiff,
-                    reg_metric=reg_metric
-                )
-            else:
-                # Subsequent batches: continue retraining
-                loss_result = model.fit(
-                    batch_dataset, 
-                    opt="LBFGS", 
-                    steps=10,
-                    lamb=lamb,
-                    lamb_l1=lamb_l1,
-                    lamb_entropy=lamb_entropy,
-                    lamb_coef=lamb_coef,
-                    lamb_coefdiff=lamb_coefdiff,
-                    reg_metric=reg_metric
-                )
-        print("Retraining completed")
+        pass
     
     training_time = time.time() - start_time
     
     return model, training_time, pruned_structure
 
-
-def create_approximation_dataset(lenet_model, dataset, sample_points=1000, device='cpu', batch_size=256):
+class GeneratedDataset(Dataset):
     """
-    Create dataset for KAN approximation of LeNet-5 using batch processing.
+    A dataset generated by teacher model labels.
+    """
+    def __init__(self, inputs, labels):
+        assert len(inputs) == len(labels), "Inputs and labels must have the same length"
+        self.inputs = inputs
+        self.labels = labels
+
+    def __len__(self):
+        return len(self.inputs)
+
+    def __getitem__(self, idx):
+        return self.inputs[idx], self.labels[idx]
+
+def create_dataset_from_teacher(strategy, teacher_model, sample_points, batch_size, device, ori_dataset=None, chebyshev_degree=10):
+    """
+    Generate dataset using teacher model.
     
     Args:
-        lenet_model: Trained LeNet-5 model
-        dataset: Original MNIST dataset
-        sample_points: Number of points to sample
-        device: Device to use
-        batch_size: Batch size for processing
+        strategy (str): 'random', 'chebyshev', or 'ori_input'.
+        teacher_model (nn.Module): Pretrained teacher model.
+        sample_points (int): Total samples to generate.
+        batch_size (int): Batch size for generation.
+        device (torch.device): Device to run on.
+        ori_dataset: Original dataset for 'ori_input'.
+        chebyshev_degree: Degree for Chebyshev points.
     
     Returns:
-        approx_dataset: Dataset for KAN approximation
+        GeneratedDataset: Dataset with generated inputs and labels.
     """
-    print(f"Creating approximation dataset with {sample_points} sample points on {device} using batch_size={batch_size}...")
+    print(f"Generating {sample_points} samples using strategy '{strategy}'...")
     
-    lenet_model.eval()
+    teacher_model.eval()
     
-    # Randomly sample points from the training set
-    total_train = dataset['train_input'].size(0)
-    if sample_points > total_train:
-        sample_points = total_train
-    
-    indices = random.sample(range(total_train), sample_points)
-    
-    # Get sampled inputs
-    sampled_inputs = dataset['train_input'][indices].to(device)
-    
-    # Get LeNet-5 outputs for these inputs using batches
-    lenet_outputs = []
-    num_batches = (sample_points + batch_size - 1) // batch_size
+    all_inputs = []
+    all_labels = []
     
     with torch.no_grad():
-        for batch_idx in range(num_batches):
-            start_idx = batch_idx * batch_size
-            end_idx = min((batch_idx + 1) * batch_size, sample_points)
+        ori_dataloader = None
+        iterator = None
+        if strategy == 'ori_input':
+            ori_dataloader = DataLoader(ori_dataset, batch_size=batch_size, shuffle=False)
+            iterator = iter(ori_dataloader)
+        
+        num_batches = (sample_points + batch_size - 1) // batch_size
+        
+        for _ in tqdm(range(num_batches)):
+            if strategy == 'random':
+                inputs = torch.rand(batch_size, 1, 28, 28, device=device)
+            elif strategy == 'chebyshev':
+                def generate_chebyshev_tensor(batch_size: int, n: int) -> torch.Tensor:
+                    if n < 2:
+                        raise ValueError("n must be >= 2")
+                    indices = torch.randint(0, n, (batch_size, 1, 28, 28))
+                    indices_float = indices.float()
+                    chebyshev_points = (torch.cos(indices_float * math.pi / (n - 1)) + 1) / 2.0
+                    return chebyshev_points
+                inputs = generate_chebyshev_tensor(batch_size, chebyshev_degree).to(device)
+            elif strategy == 'ori_input':
+                try:
+                    inputs, _ = next(iterator)
+                    # if inputs.shape[0] < batch_size:
+                    #     added_inputs = torch.rand(batch_size - inputs.shape[0], 1, 28, 28, device=device)
+                    #     inputs = torch.cat([inputs.to(device), added_inputs], dim=0)
+                    # else:
+                    #     inputs = inputs.to(device)
+                    inputs = inputs.to(device)
+                except StopIteration:
+                    # inputs = torch.rand(batch_size, 1, 28, 28, device=device)
+                    break
+            else:
+                raise ValueError(f"Invalid strategy: {strategy}")
             
-            batch_inputs = sampled_inputs[start_idx:end_idx]
-            lenet_inputs = batch_inputs.view(-1, 1, 28, 28).to(device)
-            batch_outputs = lenet_model(lenet_inputs)
-            lenet_outputs.append(batch_outputs)
+            labels = teacher_model(inputs)
+            
+            all_inputs.append(inputs.cpu())
+            all_labels.append(labels.cpu())
     
-    # Concatenate all batch outputs
-    lenet_outputs = torch.cat(lenet_outputs, dim=0)
+    final_inputs = torch.cat(all_inputs, dim=0)[:sample_points]
+    final_labels = torch.cat(all_labels, dim=0)[:sample_points]
     
-    # Create approximation dataset
-    approx_dataset = {
-        'train_input': sampled_inputs,
-        'train_label': lenet_outputs,
-        'test_input': dataset['test_input'].to(device),
-        'test_label': dataset['test_label'].to(device)
-    }
+    print(f"Generation complete! Dataset size: {final_inputs.shape}, {final_labels.shape}")
     
-    return approx_dataset
+    return GeneratedDataset(final_inputs, final_labels)
 
-
-def train_kan_approximation(dataset, structure, device='cpu', batch_size=256, prune=False, regularization=None):
+def train_kan_approximation(train_dataset, test_dataset, structure, device='cpu', batch_size=256, prune=False, regularization=None):
     """
     Train KAN to approximate LeNet-5 using batch processing.
     
     Args:
-        dataset: Approximation dataset
+        train_dataset: Approximation train dataset
+        test_dataset: Approximation test dataset
         structure: KAN architecture
         device: Device to train on
-        batch_size: Batch size for training to handle GPU memory
-        prune: Whether to apply pruning after training and retrain
-        regularization: Dictionary with regularization parameters
-            - lamb: Overall penalty strength
-            - lamb_l1: L1 penalty strength  
-            - lamb_entropy: Entropy penalty strength
-            - lamb_coef: Coefficient penalty strength
-            - lamb_coefdiff: Coefficient smoothness penalty strength
-            - reg_metric: Regularization metric ('edge_forward_spline_n', 'edge_forward_spline_u', 'edge_forward_sum', 'edge_backward', 'node_backward')
+        batch_size: Batch size for training
+        prune: Whether to apply pruning
+        regularization: Regularization parameters
     
     Returns:
-        model: Trained KAN model
-        training_time: Time taken for training
-        pruned_structure: Structure after pruning (None if not pruned)
+        model, training_time, pruned_structure
     """
     print(f"Training KAN approximation with structure: {structure} on {device} with batch_size={batch_size}")
     if prune:
@@ -457,18 +430,12 @@ def train_kan_approximation(dataset, structure, device='cpu', batch_size=256, pr
     start_time = time.time()
     pruned_structure = None
     
+    log_cuda_memory("Before creating KAN model")
+    
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     # Create KAN model
-    model = KAN(width=structure, grid=5, k=7, seed=42, device=device)
-    
-    # Create batch dataset for training
-    train_input = dataset['train_input'].to(device)
-    train_label = dataset['train_label'].to(device)
-    
-    # Split into batches
-    num_samples = train_input.size(0)
-    num_batches = (num_samples + batch_size - 1) // batch_size
-    
-    print(f"Training with {num_batches} batches of size {batch_size}")
+    model = KAN(width=structure, grid=10, k=6, seed=42, device=device, auto_save=False)
     
     # Set regularization parameters
     if regularization:
@@ -486,102 +453,46 @@ def train_kan_approximation(dataset, structure, device='cpu', batch_size=256, pr
         lamb_coefdiff = 0.0
         reg_metric = 'edge_forward_spline_n'
     
+    log_cuda_memory("Before training")
+    
     # Train KAN with batches
-    for batch_idx in range(num_batches):
-        start_idx = batch_idx * batch_size
-        end_idx = min((batch_idx + 1) * batch_size, num_samples)
+    for train_images, train_labels in train_loader:
         
+        test_images, test_labels = next(iter(test_loader))
+        test_input = test_images.view(test_images.size(0), -1).to(device)
+        test_label = test_labels.to(device)
+
+        train_input = train_images.view(train_images.size(0), -1).to(device)
+        train_label = train_labels.to(device)
+
         batch_dataset = {
-            'train_input': train_input[start_idx:end_idx],
-            'train_label': train_label[start_idx:end_idx],
-            'test_input': dataset['test_input'].to(device),
-            'test_label': dataset['test_label'].to(device)
+            'train_input': train_input,
+            'train_label': train_label,
+            'test_input': test_input,
+            'test_label': test_label
         }
         
-        print(f"Training batch {batch_idx + 1}/{num_batches} (samples {start_idx}-{end_idx})")
+        log_cuda_memory("After loading batch data, before training batch")
         
         # Train on this batch with regularization
-        if batch_idx == 0:
-            # First batch: full training
-            loss_result = model.fit(
-                batch_dataset, 
-                opt="LBFGS", 
-                steps=20,
-                lamb=lamb,
-                lamb_l1=lamb_l1,
-                lamb_entropy=lamb_entropy,
-                lamb_coef=lamb_coef,
-                lamb_coefdiff=lamb_coefdiff,
-                reg_metric=reg_metric
-            )
-        else:
-            # Subsequent batches: continue training
-            loss_result = model.fit(
-                batch_dataset, 
-                opt="LBFGS", 
-                steps=10,
-                lamb=lamb,
-                lamb_l1=lamb_l1,
-                lamb_entropy=lamb_entropy,
-                lamb_coef=lamb_coef,
-                lamb_coefdiff=lamb_coefdiff,
-                reg_metric=reg_metric
-            )
-    
+        loss_result = model.fit(
+            batch_dataset, 
+            opt="LBFGS", 
+            steps=10,
+            batch=batch_size,
+            lamb=lamb,
+            lamb_l1=lamb_l1,
+            lamb_entropy=lamb_entropy,
+            lamb_coef=lamb_coef,
+            lamb_coefdiff=lamb_coefdiff,
+            reg_metric=reg_metric
+        )
+        log_cuda_memory("After training batch")
+        
+
     # Apply pruning if requested
     if prune:
-        print("Applying pruning to the trained model...")
-        # Get activations for pruning
-        model(dataset['train_input'][:batch_size].to(device))
-        # Apply pruning with default thresholds
-        model = model.prune(node_th=1e-2, edge_th=3e-2)
-        # Get the pruned structure
-        pruned_structure = get_kan_structure(model)
-        print(f"Pruning completed. New structure: {pruned_structure}")
-        
-        # Retrain the pruned model
-        print("Retraining the pruned model...")
-        for batch_idx in range(num_batches):
-            start_idx = batch_idx * batch_size
-            end_idx = min((batch_idx + 1) * batch_size, num_samples)
-            
-            batch_dataset = {
-                'train_input': train_input[start_idx:end_idx],
-                'train_label': train_label[start_idx:end_idx],
-                'test_input': dataset['test_input'].to(device),
-                'test_label': dataset['test_label'].to(device)
-            }
-            
-            print(f"Retraining batch {batch_idx + 1}/{num_batches} (samples {start_idx}-{end_idx})")
-            
-            # Retrain on this batch with regularization
-            if batch_idx == 0:
-                # First batch: full retraining
-                loss_result = model.fit(
-                    batch_dataset, 
-                    opt="LBFGS", 
-                    steps=20,
-                    lamb=lamb,
-                    lamb_l1=lamb_l1,
-                    lamb_entropy=lamb_entropy,
-                    lamb_coef=lamb_coef,
-                    lamb_coefdiff=lamb_coefdiff,
-                    reg_metric=reg_metric
-                )
-            else:
-                # Subsequent batches: continue retraining
-                loss_result = model.fit(
-                    batch_dataset, 
-                    opt="LBFGS", 
-                    steps=10,
-                    lamb=lamb,
-                    lamb_l1=lamb_l1,
-                    lamb_entropy=lamb_entropy,
-                    lamb_coef=lamb_coef,
-                    lamb_coefdiff=lamb_coefdiff,
-                    reg_metric=reg_metric
-                )
-        print("Retraining completed")
+        pass
     
     training_time = time.time() - start_time
     
@@ -592,7 +503,7 @@ def train_kan_approximation(dataset, structure, device='cpu', batch_size=256, pr
 # Evaluation Functions
 # -----------------------------------------------------------------------------
 
-def evaluate_kan_classification(model, dataset, device='cpu'):
+def evaluate_kan_classification(model, dataset, device='cpu', batch_size=256):
     """
     Evaluate KAN model for classification accuracy.
     
@@ -600,63 +511,57 @@ def evaluate_kan_classification(model, dataset, device='cpu'):
         model: Trained KAN model
         dataset: Test dataset
         device: Device to evaluate on
+        batch_size: Batch size
     
     Returns:
         accuracy: Classification accuracy
     """
     model.eval()
     with torch.no_grad():
-        test_input = dataset['test_input'].to(device)
-        test_label = dataset['test_labels_original'].to(device)
-        
-        # Get KAN predictions
-        outputs = model(test_input)
-        
-        # For direct KAN training, outputs are logits
-        if outputs.shape[1] == 10:  # 10 classes
+        test_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+        correct = 0
+        total = 0
+        for inputs, labels in test_loader:
+            inputs = inputs.view(inputs.size(0), -1).to(device)
+            labels = labels.to(device)
+            outputs = model(inputs)
             _, predicted = torch.max(outputs.data, 1)
-            accuracy = (predicted == test_label).sum().item() / test_label.size(0)
-        else:
-            # For single output, round to nearest class
-            predicted = torch.round(outputs).long().squeeze()
-            accuracy = (predicted == test_label).sum().item() / test_label.size(0)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+        accuracy = correct / total
     
     return accuracy
 
-
-def evaluate_kan_approximation(model, dataset, lenet_model, device='cpu'):
+def evaluate_kan_approximation(model, approx_test_dataset, device='cpu', batch_size=256):
     """
     Evaluate KAN approximation of LeNet-5.
     
     Args:
         model: Trained KAN model
-        dataset: Test dataset
-        lenet_model: Original LeNet-5 model
+        approx_test_dataset: Approximation test dataset with teacher labels
         device: Device to evaluate on
+        batch_size: Batch size
     
     Returns:
-        mse_error: Mean squared error
-        max_error: Maximum absolute error
-        mean_error: Mean absolute error
+        mse_error, max_error, mean_error
     """
     model.eval()
-    lenet_model.eval()
     
     with torch.no_grad():
-        test_input = dataset['test_input'].to(device)
-        
-        # Get LeNet-5 outputs
-        lenet_input = test_input.reshape(-1, 1, 28, 28).to(device)
-        lenet_outputs = lenet_model(lenet_input)
-        
-        # Get KAN outputs
-        kan_outputs = model(test_input)
-        
-        # Calculate errors
-        mse_error = torch.mean((kan_outputs - lenet_outputs) ** 2)
-        abs_error = torch.abs(kan_outputs - lenet_outputs)
-        max_error = torch.max(abs_error)
-        mean_error = torch.mean(abs_error)
+        test_loader = DataLoader(approx_test_dataset, batch_size=batch_size, shuffle=False)
+        mse_error = 0
+        max_error = []
+        mean_error = 0
+        for inputs, labels in test_loader:
+            inputs = inputs.view(inputs.size(0), -1).to(device)
+            labels = labels.to(device)
+            outputs = model(inputs)
+            mse_error += torch.mean((outputs - labels) ** 2)
+            max_error.append(torch.max(torch.abs(outputs - labels)))
+            mean_error += torch.mean(torch.abs(outputs - labels))
+        mse_error = mse_error / len(test_loader)
+        max_error = max(max_error)
+        mean_error = mean_error / len(test_loader)
     
     return mse_error.item(), max_error.item(), mean_error.item()
 
@@ -704,20 +609,20 @@ def model_evaluate(model, data, zero_mask=1e-3):
 # Main Benchmark Functions
 # -----------------------------------------------------------------------------
 
-def run_direct_kan_benchmark(dataset, kan_structures, device='cpu', batch_size=256, prune=False, regularization=None):
+def run_direct_kan_benchmark(train_dataset, test_dataset, kan_structures, device='cpu', batch_size=256, prune=False, regularization=None):
     """
     Run benchmark for direct KAN training on MNIST.
     
     Args:
-        dataset: MNIST dataset
-        kan_structures: List of KAN architectures to test
-        device: Device to use
-        batch_size: Batch size for training
-        prune: Whether to apply pruning after training
-        regularization: Dictionary with regularization parameters
+        train_dataset, test_dataset: Datasets
+        kan_structures: List of structures
+        device: Device
+        batch_size: Batch size
+        prune: Prune flag
+        regularization: Reg params
     
     Returns:
-        results: List of results for each structure
+        results, models_list
     """
     print("\n" + "="*50)
     print("DIRECT KAN TRAINING BENCHMARK")
@@ -728,29 +633,32 @@ def run_direct_kan_benchmark(dataset, kan_structures, device='cpu', batch_size=2
         print(f"Regularization enabled: {regularization}")
     
     results = []
+    models_list = []
     
     for i, structure in enumerate(kan_structures):
         print(f"\nTesting KAN structure {i+1}/{len(kan_structures)}: {structure}")
         
         try:
+            log_cuda_memory("Before training KAN directly")
             # Train KAN directly
-            model, training_time, pruned_structure = train_kan_direct(dataset, structure, device, batch_size, prune, regularization)
+            model, training_time, pruned_structure = train_kan_direct(train_dataset, test_dataset, structure, device, batch_size, prune, regularization)
+            
+            log_cuda_memory("After training KAN directly, before evaluating classification accuracy")
             
             # Evaluate classification accuracy
-            accuracy = evaluate_kan_classification(model, dataset, device)
+            accuracy = evaluate_kan_classification(model, test_dataset, device, batch_size)
             
-            # Evaluate regression metrics
-            error_dict = model_evaluate(model, dataset)
-            
+            log_cuda_memory("After evaluating classification accuracy in Direct KAN training")
+
             # Record results for original structure
             results.append({
                 "Method": "Direct KAN",
                 "Structure": str(structure),
                 "Training Time (s)": training_time,
                 "Classification Accuracy": accuracy,
-                "MSE": error_dict["MSE"],
-                "Mean Relative Error": error_dict["Mean Relative Error"],
-                "Maximum Relative Error": error_dict["Maximum Relative Error"],
+                "MSE": "N/A",
+                "Mean Relative Error": "N/A",
+                "Maximum Relative Error": "N/A",
                 "Batch Size": batch_size,
                 "Pruned": prune,
                 "Regularization": str(regularization) if regularization else "None",
@@ -761,26 +669,38 @@ def run_direct_kan_benchmark(dataset, kan_structures, device='cpu', batch_size=2
             print(f"Direct KAN Results:")
             print(f"  Training Time: {training_time:.2f}s")
             print(f"  Classification Accuracy: {accuracy:.4f}")
-            print(f"  MSE: {error_dict['MSE']:.6f}")
             
-            # If pruning was applied, add an additional row for the pruned structure
             if prune and pruned_structure is not None:
                 print(f"  Pruned Structure: {pruned_structure}")
-                # Add a separate row for the pruned structure
                 results.append({
                     "Method": "Direct KAN (Pruned)",
                     "Structure": str(pruned_structure),
-                    "Training Time (s)": training_time,  # Same training time since it's the same model
-                    "Classification Accuracy": accuracy,  # Same accuracy since it's the same model
-                    "MSE": error_dict["MSE"],  # Same MSE since it's the same model
-                    "Mean Relative Error": error_dict["Mean Relative Error"],
-                    "Maximum Relative Error": error_dict["Maximum Relative Error"],
+                    "Training Time (s)": training_time,
+                    "Classification Accuracy": accuracy,
+                    "MSE": "N/A",
+                    "Mean Relative Error": "N/A",
+                    "Maximum Relative Error": "N/A",
                     "Batch Size": batch_size,
                     "Pruned": True,
                     "Regularization": str(regularization) if regularization else "None",
                     "Original Structure": str(structure),
                     "Pruned Structure": str(pruned_structure)
                 })
+            
+            meta = {
+                "method": "Direct KAN",
+                "original_structure": str(structure),
+                "pruned_structure": str(pruned_structure) if prune else "N/A",
+                "prune": prune,
+                "regularization": str(regularization) if regularization else "None",
+                "accuracy": accuracy,
+                "training_time": training_time,
+                "batch_size": batch_size
+            }
+            model_cpu = model.to('cpu')
+            models_list.append({"meta": meta, "model": model_cpu})
+            del model
+            torch.cuda.empty_cache()
             
         except Exception as e:
             print(f"Error with structure {structure}: {e}")
@@ -800,25 +720,24 @@ def run_direct_kan_benchmark(dataset, kan_structures, device='cpu', batch_size=2
                 "Error": str(e)
             })
     
-    return results
+    return results, models_list
 
-
-def run_approximation_kan_benchmark(dataset, lenet_model, kan_structures, sample_points=1000, device='cpu', batch_size=256, prune=False, regularization=None):
+def run_approximation_kan_benchmark(train_dataset, test_dataset, lenet_model, kan_structures, sample_points=(10000, 1000), device='cpu', batch_size=256, prune=False, regularization=None):
     """
     Run benchmark for KAN approximation of LeNet-5.
     
     Args:
-        dataset: MNIST dataset
-        lenet_model: Trained LeNet-5 model
-        kan_structures: List of KAN architectures to test
-        sample_points: Number of points to sample for approximation
-        device: Device to use
-        batch_size: Batch size for training
-        prune: Whether to apply pruning after training
-        regularization: Dictionary with regularization parameters
+        train_dataset, test_dataset: Original datasets
+        lenet_model: Trained LeNet-5
+        kan_structures: Structures
+        sample_points: (train_samples, test_samples) for approximation
+        device: Device
+        batch_size: Batch size
+        prune: Prune flag
+        regularization: Reg params
     
     Returns:
-        results: List of results for each structure
+        results, models_list
     """
     print("\n" + "="*50)
     print("KAN APPROXIMATION OF LENET-5 BENCHMARK")
@@ -828,27 +747,31 @@ def run_approximation_kan_benchmark(dataset, lenet_model, kan_structures, sample
     if regularization:
         print(f"Regularization enabled: {regularization}")
     
+    log_cuda_memory("Before creating approximation dataset")
+    
     # Create approximation dataset
-    approx_dataset = create_approximation_dataset(lenet_model, dataset, sample_points, device, batch_size)
+    approx_train_dataset = create_dataset_from_teacher('ori_input', lenet_model, sample_points[0], batch_size, device, train_dataset)
+    approx_test_dataset = create_dataset_from_teacher('ori_input', lenet_model, sample_points[1], batch_size, device, test_dataset)
+    
+    log_cuda_memory("After creating approximation dataset")
     
     results = []
+    models_list = []
     
     for i, structure in enumerate(kan_structures):
         print(f"\nTesting KAN structure {i+1}/{len(kan_structures)}: {structure}")
         
         try:
             # Train KAN for approximation
-            model, training_time, pruned_structure = train_kan_approximation(approx_dataset, structure, device, batch_size, prune, regularization)
+            model, training_time, pruned_structure = train_kan_approximation(approx_train_dataset, approx_test_dataset, structure, device, batch_size, prune, regularization)
             
             # Evaluate approximation quality
-            mse_error, max_error, mean_error = evaluate_kan_approximation(
-                model, dataset, lenet_model, device
-            )
+            mse_error, max_error, mean_error = evaluate_kan_approximation(model, approx_test_dataset, device, batch_size)
             
             # Evaluate classification accuracy of approximated model
-            accuracy = evaluate_kan_classification(model, dataset, device)
+            accuracy = evaluate_kan_classification(model, test_dataset, device, batch_size)
             
-            # Record results for original structure
+            # Record results
             results.append({
                 "Method": "KAN Approximation",
                 "Structure": str(structure),
@@ -872,17 +795,15 @@ def run_approximation_kan_benchmark(dataset, lenet_model, kan_structures, sample
             print(f"  Mean Absolute Error: {mean_error:.6f}")
             print(f"  Maximum Absolute Error: {max_error:.6f}")
             
-            # If pruning was applied, add an additional row for the pruned structure
             if prune and pruned_structure is not None:
                 print(f"  Pruned Structure: {pruned_structure}")
-                # Add a separate row for the pruned structure
                 results.append({
                     "Method": "KAN Approximation (Pruned)",
                     "Structure": str(pruned_structure),
                     "Sample Points": sample_points,
-                    "Training Time (s)": training_time,  # Same training time since it's the same model
-                    "Classification Accuracy": accuracy,  # Same accuracy since it's the same model
-                    "MSE": mse_error,  # Same MSE since it's the same model
+                    "Training Time (s)": training_time,
+                    "Classification Accuracy": accuracy,
+                    "MSE": mse_error,
                     "Mean Absolute Error": mean_error,
                     "Maximum Absolute Error": max_error,
                     "Batch Size": batch_size,
@@ -891,6 +812,22 @@ def run_approximation_kan_benchmark(dataset, lenet_model, kan_structures, sample
                     "Original Structure": str(structure),
                     "Pruned Structure": str(pruned_structure)
                 })
+            
+            meta = {
+                "method": "KAN Approximation",
+                "original_structure": str(structure),
+                "pruned_structure": str(pruned_structure) if prune else "N/A",
+                "prune": prune,
+                "regularization": str(regularization) if regularization else "None",
+                "accuracy": accuracy,
+                "training_time": training_time,
+                "batch_size": batch_size,
+                "sample_points": sample_points
+            }
+            model_cpu = model.to('cpu')
+            models_list.append({"meta": meta, "model": model_cpu})
+            del model
+            torch.cuda.empty_cache()
             
         except Exception as e:
             print(f"Error with structure {structure}: {e}")
@@ -911,7 +848,7 @@ def run_approximation_kan_benchmark(dataset, lenet_model, kan_structures, sample
                 "Error": str(e)
             })
     
-    return results
+    return results, models_list
 
 
 # -----------------------------------------------------------------------------
@@ -930,7 +867,6 @@ if __name__ == "__main__":
     random.seed(42)
     
     # Device configuration
-    # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     device = torch.device('cuda:3')
     print(f"Using device: {device}")
     if device.type == 'cuda':
@@ -938,90 +874,120 @@ if __name__ == "__main__":
         print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
     
     # Configuration parameters
-    train_samples = 50000  # Number of training samples to use
-    test_samples = 10000    # Number of test samples to use
-    lenet_epochs = 300      # Number of epochs for LeNet-5 training
-    sample_points_list = [100000, 200000, 500000]  # Different numbers of sample points for approximation
-    batch_size = 4096        # Batch size for KAN training to handle GPU memory
+    train_samples = 50000
+    test_samples = 10000
+    lenet_epochs = 100
+    sample_points_list = [(50000, 10000)]
+    batch_size = 2048
     
-    # KAN structures to test (input_dim -> hidden_layers -> output_dim)
-    # For MNIST: input_dim = 784 (28*28), output_dim = 10 (classes)
+    # KAN structures
     kan_structures = [
+        [784, 500, 100, 10],
+        [784, 400, 200, 100, 50, 30, 10],
+        [784, 300, 70, 10],
+        [784, 200, 130, 60, 30, 10],
+        [784, 100, 70, 10],
+        [784, 100, 70, 50, 30, 10],
         [784, 50, 20, 10],
         [784, 30, 30, 20, 10],    
         [784, 20, 20, 20, 10, 10, 10],
     ]
     
-    # Regularization configurations to test
+    # Regularization configs
     regularization_configs = [
-        None  # No regularization
-        # {
-        #     'lamb': 0.01,
-        #     'lamb_l1': 1.0,
-        #     'lamb_entropy': 2.0,
-        #     'lamb_coef': 0.0,
-        #     'lamb_coefdiff': 0.0,
-        #     'reg_metric': 'edge_forward_spline_n'
-        # },
-        # {
-        #     'lamb': 0.05,
-        #     'lamb_l1': 1.0,
-        #     'lamb_entropy': 2.0,
-        #     'lamb_coef': 0.1,
-        #     'lamb_coefdiff': 0.1,
-        #     'reg_metric': 'edge_forward_spline_n'
-        # }
+        None
     ]
     
-    # Pruning configurations to test
+    # Pruning configs
     pruning_configs = [False]
+    
+    log_cuda_memory("Before loading MNIST dataset")
     
     # Load MNIST dataset
     print("Loading MNIST dataset...")
-    dataset = load_mnist_data(train_samples, test_samples, device)
+    train_dataset, test_dataset = load_mnist_data(train_samples, test_samples, device)
     
-    # Train LeNet-5 for comparison
+    log_cuda_memory("After loading MNIST dataset")
+    
+    # Train LeNet-5
     print("\nTraining LeNet-5 for comparison...")
-    lenet_model = train_lenet5(dataset, lenet_epochs, device=device)
-    lenet_accuracy = evaluate_model(lenet_model, dataset, device)
+    lenet_model = train_lenet5(train_dataset, lenet_epochs, batch_size, device=device)
+    lenet_accuracy = evaluate_model(lenet_model, test_dataset, batch_size, device=device)
     print(f"LeNet-5 Test Accuracy: {lenet_accuracy:.4f}")
+    
+    log_cuda_memory("After training LeNet-5")
     
     # Run benchmarks
     all_results = []
+    direct_models = []
+    approx_models = []
     
-    # Test different combinations of pruning and regularization
     for prune in pruning_configs:
         for regularization in regularization_configs:
             print(f"\n{'='*60}")
             print(f"Testing with prune={prune}, regularization={regularization}")
             print(f"{'='*60}")
+    
+            log_cuda_memory("Before running direct KAN training benchmark")
             
-            # 1. Direct KAN training benchmark
-            direct_results = run_direct_kan_benchmark(
-                dataset, kan_structures, device, batch_size, prune, regularization
+            # Direct KAN
+            direct_results, direct_models_batch = run_direct_kan_benchmark(
+                train_dataset, test_dataset, kan_structures, device, batch_size, prune, regularization
             )
             all_results.extend(direct_results)
+            direct_models.extend(direct_models_batch)
+    
+            log_cuda_memory("After running direct KAN training benchmark")
             
-            # 2. KAN approximation benchmark with different sample points
+            # Approximation with different sample points
             for sample_points in sample_points_list:
                 print(f"\nRunning approximation benchmark with {sample_points} sample points...")
-                approx_results = run_approximation_kan_benchmark(
-                    dataset, lenet_model, kan_structures, sample_points, device, batch_size, prune, regularization
+                approx_results, approx_models_batch = run_approximation_kan_benchmark(
+                    train_dataset, test_dataset, lenet_model, kan_structures, sample_points, device, batch_size, prune, regularization
                 )
                 all_results.extend(approx_results)
+                approx_models.extend(approx_models_batch)
     
     # Save results
     results_df = pd.DataFrame(all_results)
     
-    # Create results directory
     results_dir = f"MNIST_results_{device}"
     if not os.path.exists(results_dir):
         os.makedirs(results_dir)
     
-    # Save to Excel file
     results_file = os.path.join(results_dir, "benchmark_results.xlsx")
     results_df.to_excel(results_file, index=False)
     print(f"\nResults saved to: {results_file}")
+    
+    def get_model_accuracy(model_dict):
+        return model_dict["meta"]["accuracy"]
+    
+    # Save best models
+    if direct_models:
+        best_direct = max(direct_models, key=get_model_accuracy)
+        best_meta = best_direct["meta"]
+        model = best_direct["model"]
+        structure_str = best_meta["original_structure"].replace(" ", "")
+        if best_meta["prune"] and best_meta["pruned_structure"] != "N/A":
+            structure_str = f"original_{structure_str}_pruned_{best_meta['pruned_structure'].replace(' ', '')}"
+        filename = f"best_direct_KAN_structure_lenet_accuracy_{lenet_accuracy:.4f}_{structure_str}_prune_{best_meta['prune']}_reg_{best_meta['regularization']}_accuracy_{best_meta['accuracy']:.4f}.pt"
+        path = os.path.join("best_models", "MNIST", filename)
+        os.makedirs("./best_models/MNIST", exist_ok=True)
+        torch.save(model.state_dict(), path)
+        print(f"Saved best direct model to {path}")
+    
+    if approx_models:
+        best_approx = max(approx_models, key=get_model_accuracy)
+        best_meta = best_approx["meta"]
+        model = best_approx["model"]
+        structure_str = best_meta["original_structure"].replace(" ", "")
+        if best_meta["prune"] and best_meta["pruned_structure"] != "N/A":
+            structure_str = f"original_{structure_str}_pruned_{best_meta['pruned_structure'].replace(' ', '')}"
+        filename = f"best_approx_KAN_structure_lenet_accuracy_{lenet_accuracy:.4f}_{structure_str}_sample_points_{best_meta['sample_points']}_prune_{best_meta['prune']}_reg_{best_meta['regularization']}_accuracy_{best_meta['accuracy']:.4f}.pt"
+        path = os.path.join("best_models", "MNIST", filename)
+        os.makedirs("./best_models/MNIST", exist_ok=True)
+        torch.save(model.state_dict(), path)
+        print(f"Saved best approx model to {path}")
     
     # Print summary
     print("\n" + "="*50)
@@ -1031,7 +997,7 @@ if __name__ == "__main__":
     print(f"Total experiments: {len(all_results)}")
     print(f"Results saved to: {results_file}")
     
-    # Print best results for each method and configuration
+    # Best results prints...
     print("\nBest Direct KAN Results by Configuration:")
     direct_df = results_df[results_df['Method'] == 'Direct KAN']
     direct_pruned_df = results_df[results_df['Method'] == 'Direct KAN (Pruned)']
@@ -1077,7 +1043,7 @@ if __name__ == "__main__":
                             print(f"    Pruned Accuracy: {best_pruned['Classification Accuracy']:.4f}")
                             print(f"    Pruned MSE: {best_pruned['MSE']:.6f}")
     
-    # Print overall best results
+    # Overall best
     print("\nOverall Best Results:")
     if not direct_df.empty:
         overall_best_direct = direct_df.loc[direct_df['Classification Accuracy'].idxmax()]
@@ -1085,7 +1051,6 @@ if __name__ == "__main__":
         print(f"    Configuration: Prune={overall_best_direct['Pruned']}, Reg={overall_best_direct['Regularization']}")
         print(f"    Structure: {overall_best_direct['Structure']}")
         if overall_best_direct['Pruned'] and not direct_pruned_df.empty:
-            # Find corresponding pruned result
             pruned_match = direct_pruned_df[
                 (direct_pruned_df['Original Structure'] == overall_best_direct['Structure']) &
                 (direct_pruned_df['Regularization'] == overall_best_direct['Regularization'])
@@ -1101,7 +1066,6 @@ if __name__ == "__main__":
         print(f"    Structure: {overall_best_approx['Structure']}")
         print(f"    Sample Points: {overall_best_approx['Sample Points']}")
         if overall_best_approx['Pruned'] and not approx_pruned_df.empty:
-            # Find corresponding pruned result
             pruned_match = approx_pruned_df[
                 (approx_pruned_df['Original Structure'] == overall_best_approx['Structure']) &
                 (approx_pruned_df['Regularization'] == overall_best_approx['Regularization']) &
@@ -1111,7 +1075,7 @@ if __name__ == "__main__":
                 pruned_result = pruned_match.iloc[0]
                 print(f"    Pruned Structure: {pruned_result['Structure']}")
     
-    # Print structure comparison summary
+    # Structure comparison
     print("\nStructure Comparison Summary:")
     if not direct_pruned_df.empty:
         print("Direct KAN Structure Changes:")

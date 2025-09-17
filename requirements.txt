@@ -9,3 +9,6 @@ pandas==2.0.1
 seaborn
 pyyaml
 openpyxl
+memory_profiler
+openml
+pytabkit
