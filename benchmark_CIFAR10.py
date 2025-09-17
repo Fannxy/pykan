@@ -22,7 +22,7 @@ LOG_FILE = "cuda_memory_log.txt"
 if os.path.exists(LOG_FILE):
     os.remove(LOG_FILE)
 
-def log_cuda_memory(message):
+def log_cuda_memory(message, if_print=True):
     """
     记录当前CUDA显存使用情况到日志文件。
     
@@ -31,6 +31,9 @@ def log_cuda_memory(message):
     """
     if not torch.cuda.is_available():
         print("CUDA is not available.")
+        return
+    
+    if not if_print:
         return
 
     # 获取当前设备的显存使用情况
@@ -250,8 +253,6 @@ def train_kan_direct(train_dataset, test_dataset, structure, device='cpu', batch
     # Create KAN model
     model = KAN(width=structure, grid=5, k=3, seed=42, device=device, auto_save=False)
 
-    log_cuda_memory("Direct KAN training: After creating KAN model")
-
     # Set regularization parameters
     if regularization:
         lamb = regularization.get('lamb', 0.01)
@@ -287,8 +288,6 @@ def train_kan_direct(train_dataset, test_dataset, structure, device='cpu', batch
             'test_label': test_label
         }
         
-        log_cuda_memory("Direct KAN training: After loading batch data, before training batch")
-        
         loss_result = model.fit(
             batch_dataset, 
             opt="LBFGS", 
@@ -302,7 +301,6 @@ def train_kan_direct(train_dataset, test_dataset, structure, device='cpu', batch
             lamb_coefdiff=lamb_coefdiff,
             reg_metric=reg_metric
         )
-        log_cuda_memory("Direct KAN training: After training batch")
 
     # Apply pruning if requested
     if prune:
@@ -540,8 +538,6 @@ def train_kan_approximation(train_dataset, test_dataset, structure, device='cpu'
     start_time = time.time()
     pruned_structure = None
 
-    log_cuda_memory("Before creating KAN model")
-
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     # Create KAN model
@@ -564,8 +560,6 @@ def train_kan_approximation(train_dataset, test_dataset, structure, device='cpu'
         lamb_coefdiff = 0.0
         reg_metric = 'edge_forward_spline_n'
     
-    log_cuda_memory("Before training")
-    
     # Train KAN with batches
     for train_images, train_labels in train_loader:
         
@@ -583,8 +577,6 @@ def train_kan_approximation(train_dataset, test_dataset, structure, device='cpu'
             'test_label': test_label
         }
         
-        log_cuda_memory("After loading batch data, before training batch")
-        
         # Train on this batch with regularization
         loss_result = model.fit(
             batch_dataset, 
@@ -599,7 +591,6 @@ def train_kan_approximation(train_dataset, test_dataset, structure, device='cpu'
             lamb_coefdiff=lamb_coefdiff,
             reg_metric=reg_metric
         )
-        log_cuda_memory("After training batch")
         
 
     # Apply pruning if requested
@@ -713,16 +704,11 @@ def run_direct_kan_benchmark(train_dataset, test_dataset, kan_structures, device
         print(f"\nTesting KAN structure {i+1}/{len(kan_structures)}: {structure}")
         
         try:
-            log_cuda_memory("Before training KAN directly")
             # Train KAN directly
             model, training_time, pruned_structure = train_kan_direct(train_dataset, test_dataset, structure, device, batch_size, prune, regularization)
             
-            log_cuda_memory("After training KAN directly, before evaluating classification accuracy")
-            
             # Evaluate classification accuracy
             accuracy = evaluate_kan_classification(model, test_dataset, device)
-            
-            log_cuda_memory("After evaluating classification accuracy in Direct KAN training")
 
             # Record results for original structure
             results.append({
@@ -824,13 +810,9 @@ def run_approximation_kan_benchmark(train_dataset, test_dataset, resnet_model, k
     if regularization:
         print(f"Regularization enabled: {regularization}")
     
-    log_cuda_memory("Before creating approximation dataset")
-    
     # Create approximation dataset
     approx_train_dataset = create_dataset_from_teacher('ori_input', resnet_model, sample_points[0], batch_size, device, train_dataset)
     approx_test_dataset = create_dataset_from_teacher('ori_input', resnet_model, sample_points[1], batch_size, device, test_dataset)
-    
-    log_cuda_memory("After creating approximation dataset")
     
     results = []
     models_list = []
@@ -974,22 +956,16 @@ if __name__ == "__main__":
     
     # Pruning configurations to test
     pruning_configs = [False]
-
-    log_cuda_memory("Before loading CIFAR-10 dataset")
     
     # Load CIFAR-10 dataset
     print("Loading CIFAR-10 dataset...")
     train_dataset, test_dataset = load_cifar10_data(train_samples, test_samples, device)
-
-    log_cuda_memory("After loading CIFAR-10 dataset")
 
     # Train ResNet-18 for comparison
     print("\nTraining ResNet-18 for comparison...")
     resnet_model = train_resnet18(train_dataset, resnet_epochs, batch_size, device)
     resnet_accuracy = evaluate_model(resnet_model, test_dataset, batch_size, device)
     print(f"ResNet-18 Test Accuracy: {resnet_accuracy:.4f}")
-
-    log_cuda_memory("After training ResNet-18")
     
     # Run benchmarks
     all_results = []
@@ -1002,17 +978,13 @@ if __name__ == "__main__":
             print(f"\n{'='*60}")
             print(f"Testing with prune={prune}, regularization={regularization}")
             print(f"{'='*60}")
-
-            log_cuda_memory("Before running direct KAN training benchmark")
             
-            # # 1. Direct KAN training benchmark
-            # direct_results, direct_models_batch = run_direct_kan_benchmark(
-            #     train_dataset, test_dataset, kan_structures, device, batch_size, prune, regularization
-            # )
-            # all_results.extend(direct_results)
-            # direct_models.extend(direct_models_batch)
-
-            log_cuda_memory("After running direct KAN training benchmark")
+            # 1. Direct KAN training benchmark
+            direct_results, direct_models_batch = run_direct_kan_benchmark(
+                train_dataset, test_dataset, kan_structures, device, batch_size, prune, regularization
+            )
+            all_results.extend(direct_results)
+            direct_models.extend(direct_models_batch)
             
             # 2. KAN approximation benchmark with different sample points
             for sample_points in sample_points_list:

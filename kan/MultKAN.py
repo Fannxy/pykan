@@ -20,11 +20,8 @@ import yaml
 from .spline import curve2coef
 from .utils import SYMBOLIC_LIB
 from .hypothesis import plot_tree
-
-
-import torch
+from ..benchmark_CIFAR10 import log_cuda_memory
 import datetime
-import os
 
 # 定义一个全局的日志文件名
 LOG_FILE = "cuda_memory_log.txt"
@@ -32,43 +29,6 @@ LOG_FILE = "cuda_memory_log.txt"
 # 如果日志文件已存在，先删除，以便每次运行都是新的记录
 if os.path.exists(LOG_FILE):
     os.remove(LOG_FILE)
-
-def log_cuda_memory(message):
-    """
-    记录当前CUDA显存使用情况到日志文件。
-    
-    Args:
-        message (str): 描述当前代码位置或操作的自定义消息。
-    """
-    if not torch.cuda.is_available():
-        print("CUDA is not available.")
-        return
-
-    # 获取当前设备的显存使用情况
-    # torch.cuda.memory_allocated(): 当前tensor分配的显存（字节）
-    # torch.cuda.memory_reserved(): PyTorch缓存的显存（字节）
-    allocated = torch.cuda.memory_allocated() / 1024**2  # 转换为 MB
-    reserved = torch.cuda.memory_reserved() / 1024**2    # 转换为 MB
-    
-    # 获取时间戳
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
-    
-    # 格式化日志信息
-    log_message = (
-        f"[{timestamp}] {message}\n"
-        f"  - Allocated: {allocated:.2f} MB\n"
-        f"  - Reserved:  {reserved:.2f} MB\n"
-        f"--------------------------------------------------\n"
-    )
-    
-    # 追加写入到文件
-    with open(LOG_FILE, "a") as f:
-        f.write(log_message)
-
-    # (可选) 如果你想更详细地分析，可以使用 memory_summary()
-    # print(torch.cuda.memory_summary())
-
-
 
 class MultKAN(nn.Module):
     '''
@@ -1542,14 +1502,10 @@ class MultKAN(nn.Module):
 
         grid_update_freq = int(stop_grid_update_step / grid_update_num)
 
-        log_cuda_memory("In MultKAN.fit: Before creating optimizer")
-
         if opt == "Adam":
             optimizer = torch.optim.Adam(self.get_params(), lr=lr)
         elif opt == "LBFGS":
             optimizer = LBFGS(self.get_params(), lr=lr, history_size=10, line_search_fn="strong_wolfe", tolerance_grad=1e-32, tolerance_change=1e-32, tolerance_ys=1e-32)
-
-        log_cuda_memory("In MultKAN.fit: After creating optimizer")
 
         results = {}
         results['train_loss'] = []
@@ -1605,9 +1561,7 @@ class MultKAN(nn.Module):
             #     self.update_grid(dataset['train_input'][train_id])
 
             if opt == "LBFGS":
-                log_cuda_memory("In MultKAN.fit: Before LBFGS step")
                 optimizer.step(closure)
-                log_cuda_memory("In MultKAN.fit: After LBFGS step")
 
             if opt == "Adam":
                 pred = self.forward(dataset['train_input'][train_id], singularity_avoiding=singularity_avoiding, y_th=y_th)
@@ -1625,11 +1579,7 @@ class MultKAN(nn.Module):
                 loss.backward()
                 optimizer.step()
 
-            log_cuda_memory("In MultKAN.fit: Before forward pass")
-
             test_loss = loss_fn_eval(self.forward(dataset['test_input'][test_id]), dataset['test_label'][test_id])
-            
-            log_cuda_memory("In MultKAN.fit: After forward pass")
             
             if metrics != None:
                 for i in range(len(metrics)):
