@@ -13,3 +13,4 @@ figures
 molecule
 applications
 experiments
+best_models/CIFAR10/teacher_model.pth

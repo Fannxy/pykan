@@ -13,9 +13,9 @@ from mpl_toolkits.mplot3d import Axes3D  # 必须导入
 import random
 random.seed(42)
 
-ROOT_FOLDER = "/root/NFGen_multi-variable/BasicBenchmark/"
+ROOT_FOLDER = "/root/llm-project/NFGen+KAN/BasicBenchmark/"
 KAN_MODEL_FOLDER = ROOT_FOLDER + "kan_models/"
-
+MODEL_STORE_FOLDER = "/root/llm-project/NFGen+KAN/public_models/func_models/"
 
 def func1(x):
     """f(x_1, x_2) = \frac{1}{2\pi * x_2} e^{-\frac{x_1^2}{2x_2}}
@@ -115,6 +115,140 @@ def func9(x):
     # x1, x2, x3, x4, x5, x6 = x
     x1, x2, x3, x4, x5, x6 = x[:, 0], x[:, 1], x[:, 2], x[:, 3], x[:, 4], x[:, 5]
     return x1 / (1 + (x2 - 1) ** 2 + (x3 - x4) ** 2 + (x5 - x6) ** 2)
+
+from scipy.integrate import dblquad, tplquad
+from scipy.stats import multivariate_normal
+from scipy.stats import multivariate_t
+from scipy.special import gamma
+import math
+
+def func10(x, a1=0, a2=0, b1=3, b2=2):
+    """
+    F(x,y) = \int_{a1}^x \int_{a2}^y \frac{1}{(b1-a1)(b2-a2)} , dv,du
+    Args:
+        x (tuple of 2 dimensions)
+    """
+    x1, x2 = x[:, 0], x[:, 1]
+    batch_size = x1.shape[0]
+    results = []
+
+    def f(u, v):
+        return 1 / (b1 - a1) * (b2 - a2)
+    
+    for i in range(batch_size):
+        result, error = dblquad(f, a1, x1[i], a2, x2[i])
+        results.append(result)
+
+    results = torch.tensor(results)
+    return results
+
+def func11(x, rho=0.5):
+    """
+    F(x,y;rho) = \int_{-\infty}^x \int_{-\infty}^y
+                 \frac{1}{2\pi \sqrt{1-\rho^2}}
+                 \exp(-\frac{u^2 - 2\rho uv + v^2}{2(1-\rho^2)}) dv du
+
+    Args:
+        x (torch.Tensor): 一个形状为 (N, 2) 的张量，包含 N 个二维坐标点 (x, y)。
+        rho (float): 相关系数，范围在 (-1, 1) 之间。
+        
+    Returns:
+        torch.Tensor: 一个形状为 (N,) 的张量，包含每个输入点的 CDF 估计值。
+    """
+    if not -1 < rho < 1:
+        raise ValueError("相关系数 rho 必须在 -1 和 1 之间。")
+
+    x1, x2 = x[:, 0], x[:, 1]
+    batch_size = x1.shape[0]
+    results = []
+
+    def f(u, v):
+        return 1 / (2 * math.pi * math.sqrt(1 - rho**2)) * math.exp(-(u**2 - 2 * rho * u * v + v**2) / (2 * (1 - rho**2)))
+    
+    for i in range(batch_size):
+        result, error = dblquad(f, -torch.inf, x1[i], -torch.inf, x2[i])
+        results.append(result)
+
+    results = torch.tensor(results)
+    return results
+
+def func12(x, lambda_1=1, lambda_2=1, lambda_3=1):
+    """
+    F(x,y,z) = \int_{0}^x \int_{0}^y \int_{0}^z
+    \lambda_1 e^{-\lambda_1 u},\lambda_2 e^{-\lambda_2 v},\lambda_3 e^{-\lambda_3 w}
+    , dw, dv, du
+    Args:
+        x (tuple of 3 dimensions)
+    """
+    x1, x2, x3 = x[:, 0], x[:, 1], x[:, 2]
+    batch_size = x1.shape[0]
+    results = []
+
+    def f(u, v, w):
+        return lambda_1 * math.exp(-lambda_1 * u) * lambda_2 * math.exp(-lambda_2 * v) * lambda_3 * math.exp(-lambda_3 * w)
+    
+    for i in range(batch_size):
+        result, error = tplquad(f, 0, x1[i], 0, x2[i], 0, x3[i])
+        results.append(result)
+
+    results = torch.tensor(results)
+    return results
+
+def func13(x, mu=torch.tensor([0, 1, 2, 3]), cov=torch.tensor([[1, 0.5, 0, 1.5], [0.5, 2, 0.5, 0], [0, 0.5, 3, 0], [1.5, 0, 0, 4]], dtype=torch.float64)):
+    """
+    F(\mathbf{x}) = \int_{-\infty}^{x_1} \cdots \int_{-\infty}^{x_4}
+    \frac{1}{(2\pi)^{2} |\Sigma|^{1/2}}
+    \exp!\left(-\tfrac{1}{2} (\mathbf{t}-\mu)^\top \Sigma^{-1} (\mathbf{t}-\mu)\right), d\mathbf{t}
+    
+    Args:
+        x (torch.Tensor): 一个形状为 (N, 4) 的张量，包含 N 组积分上限点 (x1, x2, x3, x4)。
+        mu (torch.Tensor): 均值向量，形状为 (4,)。
+        cov (torch.Tensor): 协方差矩阵，形状为 (4, 4)。
+        
+    Returns:
+        torch.Tensor: 一个形状为 (N,) 的张量，包含每个输入点的 CDF 估计值。
+    """
+    # 确保输入是 torch.Tensor, 并使用 float64 以提高精度
+    if not isinstance(x, torch.Tensor):
+        x = torch.tensor(x, dtype=torch.float64)
+    if not isinstance(mu, torch.Tensor):
+        mu = torch.tensor(mu, dtype=torch.float64)
+    if not isinstance(cov, torch.Tensor):
+        cov = torch.tensor(cov, dtype=torch.float64)
+
+    x = x.cpu().numpy()
+    mu = mu.numpy()
+    cov = cov.numpy()
+
+    return torch.from_numpy(multivariate_normal.cdf(x, mu, cov)).to(torch.float32)
+
+def func14(x, nu=5, mu=torch.tensor([0, 1, 2, 3, 4]), scale_matrix=torch.tensor([[1, 0.5, 0, 1.5, 0], [0.5, 2, 0.5, 0, 1.5], [0, 0.5, 3, 0, 0.5], [1.5, 0, 0, 4, 0.5], [0, 1.5, 0, 0.5, 5]], dtype=torch.float64)):
+    """
+    计算五维多元Student's t分布的累积分布函数 (CDF)。
+
+    F(x) = ∫_{-∞}^{x_1} ... ∫_{-∞}^{x_5} pdf(t; nu, mu, Σ) dt
+    
+    其中 pdf(t; nu, mu, Σ) 是多元t分布的概率密度函数:
+    pdf(t) = C * (1 + (1/ν) * (t-μ)ᵀ Σ⁻¹ (t-μ)) ^ (-(ν+d)/2)
+    C = Γ((ν+d)/2) / [Γ(ν/2) * (νπ)^(d/2) * |Σ|^(1/2)]
+
+    Args:
+        x (torch.Tensor): 一个形状为 (N, 5) 的张量，包含 N 组积分上限点 (x1..x5)。
+        nu (float): 自由度参数 (ν)。
+        mu (torch.Tensor): 位置向量 (μ)，形状为 (5,)。
+        scale_matrix (torch.Tensor): 尺度矩阵 (Σ)，形状为 (5, 5)。必须是正定的。
+        
+    Returns:
+        torch.Tensor: 一个形状为 (N,) 的张量，包含每个输入点的 CDF 估计值。
+    """
+    # 确保输入是 torch.Tensor, 并使用 float64 以提高精度
+    # 数值积分对精度非常敏感
+    x = torch.as_tensor(x, dtype=torch.float64).cpu().numpy()
+    mu = torch.as_tensor(mu, dtype=torch.float64).numpy()
+    scale_matrix = torch.as_tensor(scale_matrix, dtype=torch.float64).numpy()
+    nu = float(nu)
+    
+    return torch.from_numpy(multivariate_t.cdf(x, df=nu, loc=mu, shape=scale_matrix)).to(torch.float32)
 
 def create_dataset_chebyshev(f, 
                    n_var=2, 
@@ -229,7 +363,7 @@ def kan_build(func, n_var, train_num, test_num, ranges, neurons=[5], sample_meth
     # Build a KAN model for the given function
     
     torch.set_default_dtype(torch.float64)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cuda:3' if torch.cuda.is_available() else 'cpu')
 
     # dataset = create_dataset(func, n_var=n_var, train_num=train_num, test_num=test_num, ranges=ranges, device=device)
     if sample_method == "chebyshev":
@@ -240,7 +374,7 @@ def kan_build(func, n_var, train_num, test_num, ranges, neurons=[5], sample_meth
         dataset = create_dataset(func, n_var=n_var, train_num=train_num, test_num=test_num, ranges=ranges, device=device)
         
     width = [n_var] + neurons + [1]
-    model = KAN(width=width, grid=grid, k=k, seed=2, device=device)
+    model = KAN(width=width, grid=grid, k=k, seed=2, device=device, auto_save=False)
     
     loss_result = model.fit(dataset, opt="LBFGS", steps=20)
     
@@ -432,34 +566,34 @@ def dataset_visualize(dataset, f, ranges, funcname, figpath):
     return
 
 funcs2d = {
-    "func1": {"f": lambda x: func1(x), "range": [(0.1, 1)] * 2},
-    "func2": {"f": lambda x: func2(x), "range": [(0, 1)] * 2},
-    "func3": {"f": lambda x: func3(x), "range": [(0, 1)] * 2},
-    "func4": {"f": lambda x: func4(x), "range": [(0, 1)] * 2},
+    "func10": {"f": lambda x: func10(x), "range": [(0, 1)] * 2},
+    "func11": {"f": lambda x: func11(x), "range": [(0.1, 1)] * 2},
 }
 
 funcs3d = {
-    "func5": {"f": lambda x: func5(x), "range": [(0.1, 1)] * 3},
-    "func6": {"f": lambda x: func6(x), "range": [(0, 1)] * 3},
-    "func7": {"f": lambda x: func7(x), "range": [(0, 1)] * 3},
-    "func8": {"f": lambda x: func8(x), "range": [(0, 1)] * 3},
+    "func12": {"f": lambda x: func12(x), "range": [(0.1, 1)] * 3},
 }
 
-funcs6d = {
-    "func9": {"f": lambda x: func9(x), "range": [(0, 1)] * 6},
+funcs4d = {
+    "func13": {"f": lambda x: func13(x), "range": [(0.1, 1)] * 4},
+}
+
+funcs5d = {
+    "func14": {"f": lambda x: func14(x), "range": [(0, 1)] * 5},
 }
 
 test_cases = {
     "2d": (2, funcs2d),
     "3d": (3, funcs3d),
-    "6d": (6, funcs6d),
+    "4d": (4, funcs4d),
+    "5d": (5, funcs5d),
 }
 
 if __name__ == "__main__":
     
-    sample_method_list = ["chebyshev"] # "chebyshev" or "random" training data sample method
+    sample_method_list = ["random"] # "chebyshev" or "random" training data sample method
     # neurons_list = [3, 5, 7, 9] # one paramemter, middle layer neurons. Now, all the KAN is [n_var, middle_neurons, 1] structure. For each neuron, the parameter is (8 orders, 5 grids), which can be seen in function kan_build.
-    neurons_list = [5]
+    neurons_list = [9]
     
     for sample_method in sample_method_list:
         for middle_neurons in neurons_list:
@@ -501,10 +635,10 @@ if __name__ == "__main__":
 
                     error_dict = model_evaluate(model, data, zero_mask=1e-6)
                     
-                    # # directly save the model.
-                    # model_name = f"{func_name}_kan_model"
-                    # model_path = f"{KAN_MODEL_FOLDER}{model_name}"
-                    # model.saveckpt(model_path)
+                    # directly save the model.
+                    model_name = f"{func_name}_{middle_neurons}neurons_kan_model.pt"
+                    model_path = f"{MODEL_STORE_FOLDER}{model_name}"
+                    torch.save(model.state_dict(), model_path)
                     
                     # Visualize the approximation for 3D functions and the data.
                     if n_var <= 2:

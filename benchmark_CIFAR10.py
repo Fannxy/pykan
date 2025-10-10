@@ -7,7 +7,7 @@ import datetime
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader, TensorDataset
+from torch.utils.data import Dataset, DataLoader, TensorDataset, ConcatDataset
 from torchvision import datasets, transforms
 from torchvision import models
 import matplotlib.pyplot as plt
@@ -90,23 +90,45 @@ def load_cifar10_data(train_samples=50000, test_samples=10000, device='cpu'):
         dataset: Dictionary with train/test inputs and labels
     """
     print("Loading CIFAR-10 dataset...")
-    
+    if test_samples > 10000:
+        test_samples = 10000
+        print("test_samples is too large, set to 10000")
+        
+    cifar10_mean = (0.4914, 0.4822, 0.4465)
+    cifar10_std = (0.2023, 0.1994, 0.2010)
     # Define normalization for CIFAR-10
-    transform = transforms.Compose([
+    transform_test = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+        transforms.Normalize(cifar10_mean, cifar10_std)
+    ])
+    # 训练集的增广策略
+    # 包括：随机裁剪、随机水平翻转、颜色抖动等
+    transform_train_augmented = transforms.Compose([
+        transforms.RandomCrop(32, padding=4),       # 在32x32图像周围填充4个像素，然后随机裁剪出32x32
+        transforms.RandomHorizontalFlip(),            # 50%的概率水平翻转
+        transforms.RandomRotation(30),                # 随机旋转-30到+30度
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2), # 随机改变亮度、对比度、饱和度
+        transforms.ToTensor(),                        # 将PIL Image或numpy.ndarray转换为tensor，并将像素值从[0, 255]缩放到[0, 1]
+        transforms.Normalize(cifar10_mean, cifar10_std) # 用给定的均值和标准差进行归一化
     ])
     
-    train_dataset_full = datasets.CIFAR10(root='../data', train=True, download=False, transform=transform)
-    test_dataset_full = datasets.CIFAR10(root='../data', train=False, download=False, transform=transform)
+    num_train_dataset = (train_samples + 49999)// 50000
+    augmented_train_datasets = []
+    for i in range(num_train_dataset):
+        augmented_train_datasets.append(datasets.CIFAR10(root='../data', train=True, download=False, transform=transform_train_augmented))
+    train_dataset_full = ConcatDataset(augmented_train_datasets)
+    test_dataset_full = datasets.CIFAR10(root='../data', train=False, download=False, transform=transform_test)
 
     train_dataset = torch.utils.data.Subset(train_dataset_full, range(train_samples))
     test_dataset = torch.utils.data.Subset(test_dataset_full, range(test_samples))
+
+    ori_train_dataset = datasets.CIFAR10(root='../data', train=True, download=False, transform=transform_test)
+    ori_test_dataset = datasets.CIFAR10(root='../data', train=False, download=False, transform=transform_test)
     
-    print(f"Dataset prepared:")
+    print(f"Dataset prepared: train_samples={train_samples}, test_samples={test_samples}")
     print(f"Device: {device}")
     
-    return train_dataset, test_dataset
+    return train_dataset, test_dataset, ori_train_dataset
 
 
 def train_resnet18(dataset, epochs=30, batch_size=128, device='cpu'):
@@ -330,27 +352,6 @@ class GeneratedDataset(Dataset):
         label_sample = self.labels[idx]
         return input_sample, label_sample
 
-
-class GeneratedDataset(Dataset):
-    """
-    一个由教师模型生成标签的数据集。
-    """
-    def __init__(self, inputs, labels):
-        # 确认输入和标签的数量一致
-        assert len(inputs) == len(labels), "输入和标签的数量必须相同"
-        self.inputs = inputs
-        self.labels = labels
-
-    def __len__(self):
-        """返回数据集中样本的总数"""
-        return len(self.inputs)
-
-    def __getitem__(self, idx):
-        """根据索引idx获取一个样本（输入和对应的标签）"""
-        input_sample = self.inputs[idx]
-        label_sample = self.labels[idx]
-        return input_sample, label_sample
-
 class WeightedCEL_KLDLoss(nn.Module):
     """
     一个健壮的自定义损失函数，计算交叉熵损失和KL散度损失的加权和。
@@ -359,7 +360,7 @@ class WeightedCEL_KLDLoss(nn.Module):
     1. 类别索引 (long tensor)，形状为 [batch_size]。
     2. 类别分布，如one-hot或软标签 (float tensor)，形状为 [batch_size, num_classes]。
     """
-    def __init__(self, alpha=0.5, temperature=1.0):
+    def __init__(self, alpha=1.0, temperature=1.0):
         super(WeightedCEL_KLDLoss, self).__init__()
         if not 0 <= alpha <= 1:
             raise ValueError("权重 alpha 必须在 [0, 1] 范围内。")
@@ -381,35 +382,15 @@ class WeightedCEL_KLDLoss(nn.Module):
         """
         num_classes = y_pred.shape[1]
         
-        # --- 核心逻辑：判断y_true的格式 ---
-        # 如果y_true是1D的long/int张量，则认为是类别索引
-        if y_true.ndim == 1 and torch.is_floating_point(y_true) == False:
-            y_true_indices = y_true
-            # 将索引转换为one-hot分布，用于KL散度计算
-            y_true_dist = F.one_hot(y_true_indices, num_classes=num_classes).float()
-            
-            # 1.a 计算交叉熵损失 (使用高效的内置函数)
-            ce_loss = self.cross_entropy_loss(y_pred, y_true_indices)
-
-        # 如果y_true是2D的浮点数张量，则认为是one-hot或软标签
-        elif y_true.ndim == 2 and y_true.shape[1] == num_classes:
-            y_true_dist = F.softmax(y_true, dim=1)
-            # 1.b 计算交叉熵损失 (手动计算，以支持软标签)
-            # CE(p, q) = - sum(p_i * log(q_i))
-            # F.log_softmax(y_pred) 得到 log(q_i)
-            log_pred_softmax = F.log_softmax(y_pred, dim=1)
-            # 逐元素相乘，按类别求和，再按批次取平均
-            ce_loss = -torch.sum(y_true_dist * log_pred_softmax, dim=1).mean()
-        else:
-            raise ValueError(
-                f"不支持的 y_true 格式! 形状: {y_true.shape}, 类型: {y_true.dtype}. "
-                "请确保 y_true 是类别索引 (1D Long Tensor) 或类别分布 (2D Float Tensor)。"
-            )
+        y_true_dist = F.softmax(y_true, dim=1)
+        # 1.b 计算交叉熵损失 (手动计算，以支持软标签)
+        # CE(p, q) = - sum(p_i * log(q_i))
+        # F.log_softmax(y_pred) 得到 log(q_i)
+        log_pred_softmax = F.log_softmax(y_pred / self.temperature, dim=1)
+        ce_loss = -torch.sum(y_true_dist * log_pred_softmax, dim=1).mean()
 
         # 2. 计算KL散度损失
-        # KL散度需要两个概率分布
-        y_pred_log_softmax_temp = F.log_softmax(y_pred / self.temperature, dim=1)
-        kl_loss = self.kl_div_loss(y_pred_log_softmax_temp, y_true_dist)
+        kl_loss = self.kl_div_loss(log_pred_softmax, y_true_dist)
         
         # 3. 计算加权总损失
         total_loss = self.alpha * ce_loss + (1 - self.alpha) * kl_loss
@@ -582,7 +563,7 @@ def train_kan_approximation(train_dataset, test_dataset, structure, device='cpu'
             batch_dataset, 
             opt="LBFGS", 
             steps=20,
-            loss_fn=WeightedCEL_KLDLoss(alpha=1),
+            loss_fn=WeightedCEL_KLDLoss(alpha=0.5),
             batch=batch_size,
             lamb=lamb,
             lamb_l1=lamb_l1,
@@ -929,23 +910,25 @@ if __name__ == "__main__":
     
     # Device configuration
     # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    device = torch.device('cuda:1')
+    device = torch.device('cuda:3')
     print(f"Using device: {device}")
     if device.type == 'cuda':
         print(f"GPU: {torch.cuda.get_device_name(0)}")
         print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
     
     # Configuration parameters
-    train_samples = 50000  # Number of training samples to use
+    train_samples = 500000  # Number of training samples to use
     test_samples = 10000    # Number of test samples to use
     resnet_epochs = 200      # Number of epochs for ResNet-18 training
-    sample_points_list = [(50000, 10000)]  # Different numbers of sample points for approximation, the first is for training, the second is for testing
+    sample_points_list = [(500000, 10000)]  # Different numbers of sample points for approximation, the first is for training, the second is for testing
     batch_size = 2048        # Batch size for KAN training to handle GPU memory
     
     # KAN structures to test (input_dim = 3072, output_dim = 10)
     kan_structures = [
-        [3072, 150, 100, 50, 30, 10],
-        [3072, 100, 70, 50, 30, 10],
+        [3072, 100, 50, 30, 10],
+        [3072, 200, 70, 10],
+        [3072, 150, 50, 10],
+        [3072, 100, 30, 10],
         [3072, 50, 30, 10]
     ]
     
@@ -959,11 +942,11 @@ if __name__ == "__main__":
     
     # Load CIFAR-10 dataset
     print("Loading CIFAR-10 dataset...")
-    train_dataset, test_dataset = load_cifar10_data(train_samples, test_samples, device)
+    train_dataset, test_dataset, ori_train_dataset = load_cifar10_data(train_samples, test_samples, device)
 
     # Train ResNet-18 for comparison
     print("\nTraining ResNet-18 for comparison...")
-    resnet_model = train_resnet18(train_dataset, resnet_epochs, batch_size, device)
+    resnet_model = train_resnet18(ori_train_dataset, resnet_epochs, batch_size, device)
     resnet_accuracy = evaluate_model(resnet_model, test_dataset, batch_size, device)
     print(f"ResNet-18 Test Accuracy: {resnet_accuracy:.4f}")
     
@@ -979,12 +962,12 @@ if __name__ == "__main__":
             print(f"Testing with prune={prune}, regularization={regularization}")
             print(f"{'='*60}")
             
-            # 1. Direct KAN training benchmark
-            direct_results, direct_models_batch = run_direct_kan_benchmark(
-                train_dataset, test_dataset, kan_structures, device, batch_size, prune, regularization
-            )
-            all_results.extend(direct_results)
-            direct_models.extend(direct_models_batch)
+            # # 1. Direct KAN training benchmark
+            # direct_results, direct_models_batch = run_direct_kan_benchmark(
+            #     train_dataset, test_dataset, kan_structures, device, batch_size, prune, regularization
+            # )
+            # all_results.extend(direct_results)
+            # direct_models.extend(direct_models_batch)
             
             # 2. KAN approximation benchmark with different sample points
             for sample_points in sample_points_list:

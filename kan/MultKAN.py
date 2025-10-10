@@ -20,7 +20,6 @@ import yaml
 from .spline import curve2coef
 from .utils import SYMBOLIC_LIB
 from .hypothesis import plot_tree
-from ..benchmark_CIFAR10 import log_cuda_memory
 import datetime
 
 # 定义一个全局的日志文件名
