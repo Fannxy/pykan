@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd 
 import time
 import torch
+import torch.nn as nn
 import itertools
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D  # 必须导入
@@ -15,7 +16,7 @@ random.seed(42)
 
 ROOT_FOLDER = "/root/llm-project/NFGen+KAN/BasicBenchmark/"
 KAN_MODEL_FOLDER = ROOT_FOLDER + "kan_models/"
-MODEL_STORE_FOLDER = "/root/llm-project/NFGen+KAN/public_models/func_models/"
+MODEL_STORE_FOLDER = "/root/llm-project/NFGen+KAN/pykan/basicbench/func_models/"
 
 def func1(x):
     """f(x_1, x_2) = \frac{1}{2\pi * x_2} e^{-\frac{x_1^2}{2x_2}}
@@ -24,7 +25,6 @@ def func1(x):
         x (tuple of 2 dimensions)
     """
     
-    # x1, x2 = x
     x1, x2 = x[:, 0], x[:, 1]
     return 1 / (2 * torch.pi * x2) * torch.exp(-x1**2 / (2 * x2))
 
@@ -64,7 +64,6 @@ def func5(x):
         x (tuple of 3 dimensions)
     """
     
-    # x1, x2, x3 = x
     x1, x2, x3 = x[:, 0], x[:, 1], x[:, 2]
     return 1 / (2 * torch.pi * x3) * torch.exp(-((x1 - x2) ** 2) / (2 * x3))
 
@@ -75,7 +74,6 @@ def func6(x):
         x (tuple of 3 dimensions)
     """
     
-    # x1, x2, x3 = x
     x1, x2, x3 = x[:, 0], x[:, 1], x[:, 2]
     return torch.sqrt(1 + x1**2 + 2 * x1 * torch.cos(x2 - x3))
 
@@ -85,7 +83,6 @@ def func7(x):
     Args:
         x (tuple of 3 dimensions)
     """
-    # x1, x2, x3 = x
     x1, x2, x3 = x[:, 0], x[:, 1], x[:, 2]
     diff = (x2 - x3) / 2  # 计算分母和正弦函数的输入
 
@@ -101,20 +98,19 @@ def func8(x):
     Args:
         x (tuple of 3 dimensions)
     """
-    # x1, x2, x3 = x
+    
     x1, x2, x3 = x[:, 0], x[:, 1], x[:, 2]
     return x1 * (1 + x2 * torch.cos(x3))
 
 def func9(x):
-    """f(x_1, x_2, x_3, x_4, x_5, x_6) = \frac{x_1}{1 + (x_2 - 1)^2 + (x_3 - x_4)^2 + (x_5 - x_6)^2}
+    """f(x_1, x_2, x_3, x_4, x_5, x_6) = \frac{x_1}{(x_2 - 1)^2 + (x_3 - x_4)^2 + (x_5 - x_6)^2}
 
     Args:
         x (tuple of 6 dimensions)
     """
     
-    # x1, x2, x3, x4, x5, x6 = x
     x1, x2, x3, x4, x5, x6 = x[:, 0], x[:, 1], x[:, 2], x[:, 3], x[:, 4], x[:, 5]
-    return x1 / (1 + (x2 - 1) ** 2 + (x3 - x4) ** 2 + (x5 - x6) ** 2)
+    return x1 / ((x2 - 1) ** 2 + (x3 - x4) ** 2 + (x5 - x6) ** 2)
 
 from scipy.integrate import dblquad, tplquad
 from scipy.stats import multivariate_normal
@@ -194,7 +190,7 @@ def func12(x, lambda_1=1, lambda_2=1, lambda_3=1):
     results = torch.tensor(results)
     return results
 
-def func13(x, mu=torch.tensor([0, 1, 2, 3]), cov=torch.tensor([[1, 0.5, 0, 1.5], [0.5, 2, 0.5, 0], [0, 0.5, 3, 0], [1.5, 0, 0, 4]], dtype=torch.float64)):
+def func13(x, mu=torch.tensor([0, 0, 0, 0]), cov=torch.eye(4), dtype=torch.float64):
     """
     F(\mathbf{x}) = \int_{-\infty}^{x_1} \cdots \int_{-\infty}^{x_4}
     \frac{1}{(2\pi)^{2} |\Sigma|^{1/2}}
@@ -222,7 +218,7 @@ def func13(x, mu=torch.tensor([0, 1, 2, 3]), cov=torch.tensor([[1, 0.5, 0, 1.5],
 
     return torch.from_numpy(multivariate_normal.cdf(x, mu, cov)).to(torch.float32)
 
-def func14(x, nu=5, mu=torch.tensor([0, 1, 2, 3, 4]), scale_matrix=torch.tensor([[1, 0.5, 0, 1.5, 0], [0.5, 2, 0.5, 0, 1.5], [0, 0.5, 3, 0, 0.5], [1.5, 0, 0, 4, 0.5], [0, 1.5, 0, 0.5, 5]], dtype=torch.float64)):
+def func14(x, nu=5, mu=torch.tensor([0, 0, 0, 0, 0]), scale_matrix=torch.eye(5), dtype=torch.float64):
     """
     计算五维多元Student's t分布的累积分布函数 (CDF)。
 
@@ -249,6 +245,58 @@ def func14(x, nu=5, mu=torch.tensor([0, 1, 2, 3, 4]), scale_matrix=torch.tensor(
     nu = float(nu)
     
     return torch.from_numpy(multivariate_t.cdf(x, df=nu, loc=mu, shape=scale_matrix)).to(torch.float32)
+
+
+def func15(x):
+    """
+    用 PyTorch 计算公式: x1 / (exp(x2/x3) + exp(-x2/x3))
+
+    Args:
+        x1 (torch.Tensor or float): 分子。
+        x2 (torch.Tensor or float): 指数中的变量。
+        x3 (torch.Tensor or float): 指数中的变量，不能为零。
+
+    Returns:
+        torch.Tensor: 计算结果。
+    """
+    x1, x2, x3 = x[:, 0], x[:, 1], x[:, 2]
+
+    term_inside_exp = x2 / x3
+    
+    exp_term_pos = torch.exp(term_inside_exp)
+    exp_term_neg = torch.exp(-term_inside_exp)
+    denominator = exp_term_pos + exp_term_neg
+    result = x1 / denominator
+    
+    return result
+
+class RobustRelativeErrorLoss(nn.Module):
+    def __init__(self, epsilon=1e-3):
+        """
+        鲁棒的相对误差损失。
+        当 ground_truth 的绝对值小于 epsilon 时，使用绝对误差，否则使用相对误差。
+        :param epsilon: 用于判断 ground_truth 是否接近零的阈值。
+        """
+        super().__init__()
+        self.epsilon = epsilon
+
+    def forward(self, predictions, ground_truth):
+        predictions = predictions.to(ground_truth.device, dtype=ground_truth.dtype)
+        
+        diff = torch.abs(predictions - ground_truth)
+        
+        # 分母，加上一个极小值避免在反向传播中出现0
+        # 但这里我们用 where 来处理，就不需要在分母上加了
+        denominator = torch.abs(ground_truth)
+        
+        # 当分母（真实值）很小时，使用绝对误差
+        loss_tensor = torch.where(
+            denominator < self.epsilon,
+            diff ** 2,  # 绝对误差
+            diff ** 2 / denominator ** 1.5 # 相对误差
+        )
+        
+        return torch.mean(loss_tensor)
 
 def create_dataset_chebyshev(f, 
                    n_var=2, 
@@ -359,11 +407,11 @@ def create_dataset_chebyshev(f,
     
     return dataset
 
-def kan_build(func, n_var, train_num, test_num, ranges, neurons=[5], sample_method="chebyshev", grid=5, k=8):
+def kan_build(func, n_var, train_num, test_num, ranges, neurons=[5], sample_method="chebyshev", grid=5, k=8, parameters={'lamb': 0.01, 'lamb_l1': 1.0, 'lamb_entropy': 2.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}):
     # Build a KAN model for the given function
     
     torch.set_default_dtype(torch.float64)
-    device = torch.device('cuda:3' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
     # dataset = create_dataset(func, n_var=n_var, train_num=train_num, test_num=test_num, ranges=ranges, device=device)
     if sample_method == "chebyshev":
@@ -374,9 +422,17 @@ def kan_build(func, n_var, train_num, test_num, ranges, neurons=[5], sample_meth
         dataset = create_dataset(func, n_var=n_var, train_num=train_num, test_num=test_num, ranges=ranges, device=device)
         
     width = [n_var] + neurons + [1]
-    model = KAN(width=width, grid=grid, k=k, seed=2, device=device, auto_save=False)
+    model = KAN(width=width, grid=grid, k=k, seed=42, device=device, auto_save=False)
     
-    loss_result = model.fit(dataset, opt="LBFGS", steps=20)
+    loss_result = model.fit(dataset, 
+                            loss_fn=RobustRelativeErrorLoss(),
+                            opt="LBFGS", 
+                            steps=1000, 
+                            lamb=parameters['lamb'], 
+                            lamb_l1=parameters['lamb_l1'], 
+                            lamb_entropy=parameters['lamb_entropy'], 
+                            lamb_coef=parameters['lamb_coef'], 
+                            lamb_coefdiff=parameters['lamb_coefdiff'])
     
     return model, dataset
 
@@ -398,6 +454,8 @@ def model_evaluate(model, data, zero_mask = 1e-3):
     
     error_dict = {
         "MSE": mse_error.item(),
+        "Mean Absolute Error": torch.mean(abs_error).item(),
+        "Maximum Absolute Error": torch.max(abs_error).item(),
         "Mean Relative Error": mean_relative_error.item(),
         "Maximum Relative Error": maximum_relative_error.item()
     }
@@ -565,41 +623,71 @@ def dataset_visualize(dataset, f, ranges, funcname, figpath):
     
     return
 
+range_func1 = [(0.1, 2), (0.1, 2)]
+range_func2 = [(-2, 2), (-math.pi, math.pi)]
+range_func3 = [(-2, 2), (-math.pi, math.pi)]
+range_func4 = [(-math.pi, math.pi), (-math.pi, math.pi)]
+range_func5 = [(0, 2), (0, 2), (0.1, 2)]
+range_func6 = [(0.1, 1.5), (0, math.pi/2), (-math.pi/2, 0)]
+range_func7 = [(0, 2), (-math.pi, 0), (0, math.pi)]
+range_func8 = [(0, 1), (0, 1), (0, math.pi)]
+range_func9 = [(0, 1), (-1, 0), (-1, 0), (0, 1), (-1, 0), (0, 1)]
+range_func10 = [(0, 1), (0, 1)]
+range_func11 = [(0.1, 5), (0.1, 5)]
+range_func12 = [(0.1, 5), (0.1, 5), (0.1, 5)]
+range_func13 = [(0.1, 2), (0.1, 2), (0.1, 2), (0.1, 2)]
+range_func14 = [(0, 2), (0, 2), (0, 2), (0, 2), (0, 2)]
+range_func15 = [(0, 1), (0, 1), (0.2, 2)]
+
 funcs2d = {
-    "func10": {"f": lambda x: func10(x), "range": [(0, 1)] * 2},
-    "func11": {"f": lambda x: func11(x), "range": [(0.1, 1)] * 2},
+    "func1": {"f": lambda x: func1(x), "range": range_func1, "parameters": {'lamb': 0.01, 'lamb_l1': 0.001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
+    "func2": {"f": lambda x: func2(x), "range": range_func2, "parameters": {'lamb': 0.01, 'lamb_l1': 0.001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
+    "func3": {"f": lambda x: func3(x), "range": range_func3, "parameters": {'lamb': 0.01, 'lamb_l1': 0.0001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
+    "func4": {"f": lambda x: func4(x), "range": range_func4, "parameters": {'lamb': 0.01, 'lamb_l1': 0.001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
+    "func10": {"f": lambda x: func10(x), "range": range_func10, "parameters": {'lamb': 0.01, 'lamb_l1': 0.001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
+    "func11": {"f": lambda x: func11(x), "range": range_func11, "parameters": {'lamb': 0.0, 'lamb_l1': 0.0, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
 }
 
 funcs3d = {
-    "func12": {"f": lambda x: func12(x), "range": [(0.1, 1)] * 3},
+    # "func5": {"f": lambda x: func5(x), "range": range_func5, "parameters": {'lamb': 0.01, 'lamb_l1': 0.001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
+    "func6": {"f": lambda x: func6(x), "range": range_func6, "parameters": {'lamb': 0.01, 'lamb_l1': 0.0005, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
+    # "func7": {"f": lambda x: func7(x), "range": range_func7, "parameters": {'lamb': 0.01, 'lamb_l1': 0.0001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
+    # "func8": {"f": lambda x: func8(x), "range": range_func8, "parameters": {'lamb': 0.01, 'lamb_l1': 0.0005, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
+    # "func12": {"f": lambda x: func12(x), "range": range_func12, "parameters": {'lamb': 0.01, 'lamb_l1': 0.001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
+    # "func15": {"f": lambda x: func15(x), "range": range_func15, "parameters": {'lamb': 0.01, 'lamb_l1': 0.001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
 }
 
 funcs4d = {
-    "func13": {"f": lambda x: func13(x), "range": [(0.1, 1)] * 4},
+    "func13": {"f": lambda x: func13(x), "range": range_func13, "parameters": {'lamb': 0.01, 'lamb_l1': 0.001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
 }
 
 funcs5d = {
-    "func14": {"f": lambda x: func14(x), "range": [(0, 1)] * 5},
+    "func14": {"f": lambda x: func14(x), "range": range_func14, "parameters": {'lamb': 0.01, 'lamb_l1': 0.001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
+}
+
+funcs6d = {
+    "func9": {"f": lambda x: func9(x), "range": range_func9, "parameters": {'lamb': 0.01, 'lamb_l1': 0.001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
 }
 
 test_cases = {
-    "2d": (2, funcs2d),
-    "3d": (3, funcs3d),
-    "4d": (4, funcs4d),
+    # "2d": (2, funcs2d),
+    # "3d": (3, funcs3d),
+    # "4d": (4, funcs4d),
     "5d": (5, funcs5d),
+    # "6d": (6, funcs6d),
 }
 
 if __name__ == "__main__":
     
-    sample_method_list = ["random"] # "chebyshev" or "random" training data sample method
+    sample_method_list = ["chebyshev"] # "chebyshev" or "random" training data sample method
     # neurons_list = [3, 5, 7, 9] # one paramemter, middle layer neurons. Now, all the KAN is [n_var, middle_neurons, 1] structure. For each neuron, the parameter is (8 orders, 5 grids), which can be seen in function kan_build.
-    neurons_list = [9]
+    neurons_list = [[9]]
     
     for sample_method in sample_method_list:
         for middle_neurons in neurons_list:
             
-            result_folder = f"./benchmark_results_{sample_method}/" # stores the visualization of 2d functions.
-            figfolder = f"./benchmark_figures_{sample_method}/" # stores the test set errors (for accuracy), fitting time (sec), and the structures.
+            result_folder = f"./basicbench/benchmark_results_{sample_method}/" # stores the visualization of 2d functions.
+            figfolder = f"./basicbench/benchmark_figures_{sample_method}/" # stores the test set errors (for accuracy), fitting time (sec), and the structures.
             
             # Ensure the result folder exists
             import os
@@ -611,7 +699,7 @@ if __name__ == "__main__":
                 
             # middle_neurons = middle_neurons
             
-            neurons = [middle_neurons]
+            neurons = middle_neurons
             
             results = []
             
@@ -624,16 +712,17 @@ if __name__ == "__main__":
                     print(f"Running benchmark with sample method: {sample_method}, middle neurons: {middle_neurons}, on function {func_name} with {n_var} variables.")
                     ranges = func_dict["range"]
                     func = func_dict["f"]
+                    parameters = func_dict["parameters"]
                     
                     start = time.time()
-                    model, data = kan_build(func, n_var=n_var, train_num=10000, test_num=1000, ranges=ranges, neurons=neurons, sample_method=sample_method)
+                    model, data = kan_build(func, n_var=n_var, train_num=300000, test_num=10000, ranges=ranges, neurons=neurons, sample_method=sample_method, parameters=parameters)
                     end = time.time()
 
                     data_path = f"{KAN_MODEL_FOLDER}data/{func_name}.pkl"
                     with open(data_path, 'wb') as _f:
                         pickle.dump(data, _f)
 
-                    error_dict = model_evaluate(model, data, zero_mask=1e-6)
+                    error_dict = model_evaluate(model, data, zero_mask=1e-3)
                     
                     # directly save the model.
                     model_name = f"{func_name}_{middle_neurons}neurons_kan_model.pt"
@@ -649,7 +738,10 @@ if __name__ == "__main__":
                     results.append({
                         "n_var": n_var,
                         "Function": func_name,
+                        "range": ranges,
                         "MSE": error_dict["MSE"],
+                        "Mean Absolute Error": error_dict["Mean Absolute Error"],
+                        "Maximum Absolute Error": error_dict["Maximum Absolute Error"],
                         "Mean Relative Error": error_dict["Mean Relative Error"],
                         "Maximum Relative Error": error_dict["Maximum Relative Error"],
                         "Time Taken (s)": end - start,
