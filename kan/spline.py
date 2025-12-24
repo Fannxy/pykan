@@ -113,6 +113,9 @@ def curve2coef(x_eval, y_eval, grid, k):
     device = mat.device
     
     #coef = torch.linalg.lstsq(mat, y_eval, driver='gelsy' if device == 'cpu' else 'gels').solution[:,:,:,0]
+    coef = torch.linalg.lstsq(mat, y_eval).solution[:,:,:,0]
+    return coef
+
     try:
         coef = torch.linalg.lstsq(mat, y_eval).solution[:,:,:,0]
         return coef

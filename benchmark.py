@@ -19,7 +19,7 @@ KAN_MODEL_FOLDER = ROOT_FOLDER + "kan_models/"
 MODEL_STORE_FOLDER = "/root/llm-project/NFGen+KAN/pykan/basicbench/func_models/"
 
 def func1(x):
-    """f(x_1, x_2) = \frac{1}{2\pi * x_2} e^{-\frac{x_1^2}{2x_2}}
+    """f(x_1, x_2) = \frac{1}{2\pi * x_2} e^{-\frac{x_1^2}{2x_2}} 
 
     Args:
         x (tuple of 2 dimensions)
@@ -271,7 +271,7 @@ def func15(x):
     return result
 
 class RobustRelativeErrorLoss(nn.Module):
-    def __init__(self, epsilon=1e-3):
+    def __init__(self, epsilon=1e-3, denominator_min_val=1e-6):
         """
         鲁棒的相对误差损失。
         当 ground_truth 的绝对值小于 epsilon 时，使用绝对误差，否则使用相对误差。
@@ -279,6 +279,7 @@ class RobustRelativeErrorLoss(nn.Module):
         """
         super().__init__()
         self.epsilon = epsilon
+        self.denominator_min_val = denominator_min_val
 
     def forward(self, predictions, ground_truth):
         predictions = predictions.to(ground_truth.device, dtype=ground_truth.dtype)
@@ -287,13 +288,16 @@ class RobustRelativeErrorLoss(nn.Module):
         
         # 分母，加上一个极小值避免在反向传播中出现0
         # 但这里我们用 where 来处理，就不需要在分母上加了
-        denominator = torch.abs(ground_truth)
+        denominator_clamped = torch.clamp(
+            torch.abs(ground_truth), 
+            min=self.denominator_min_val
+        )
         
         # 当分母（真实值）很小时，使用绝对误差
         loss_tensor = torch.where(
-            denominator < self.epsilon,
+            denominator_clamped < self.epsilon,
             diff ** 2,  # 绝对误差
-            diff ** 2 / denominator ** 1.5 # 相对误差
+            diff ** 2 / denominator_clamped ** 1.7 # 相对误差
         )
         
         return torch.mean(loss_tensor)
@@ -399,15 +403,15 @@ def create_dataset_chebyshev(f,
     
     # Create dataset dictionary
     dataset = {
-        'train_input': train_input.to(device),
-        'test_input': test_input.to(device),
-        'train_label': train_label.to(device),
-        'test_label': test_label.to(device)
+        'train_input': train_input.to(device).to(torch.float64),
+        'test_input': test_input.to(device).to(torch.float64),
+        'train_label': train_label.to(device).to(torch.float64),
+        'test_label': test_label.to(device).to(torch.float64)
     }
     
     return dataset
 
-def kan_build(func, n_var, train_num, test_num, ranges, neurons=[5], sample_method="chebyshev", grid=5, k=8, parameters={'lamb': 0.01, 'lamb_l1': 1.0, 'lamb_entropy': 2.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}):
+def kan_build(func, n_var, train_num, test_num, ranges, neurons=[5], sample_method="chebyshev", grid=5, k=8, parameters={'update_grid': True, 'grid_update_num': 10, 'stop_grid_update_step': 50, 'lamb': 0.01, 'lamb_l1': 1.0, 'lamb_entropy': 2.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}):
     # Build a KAN model for the given function
     
     torch.set_default_dtype(torch.float64)
@@ -423,11 +427,15 @@ def kan_build(func, n_var, train_num, test_num, ranges, neurons=[5], sample_meth
         
     width = [n_var] + neurons + [1]
     model = KAN(width=width, grid=grid, k=k, seed=42, device=device, auto_save=False)
+    model.speed()
     
     loss_result = model.fit(dataset, 
                             loss_fn=RobustRelativeErrorLoss(),
                             opt="LBFGS", 
-                            steps=1000, 
+                            steps=300, 
+                            update_grid=parameters['update_grid'],
+                            grid_update_num=parameters['grid_update_num'],
+                            stop_grid_update_step=parameters['stop_grid_update_step'],
                             lamb=parameters['lamb'], 
                             lamb_l1=parameters['lamb_l1'], 
                             lamb_entropy=parameters['lamb_entropy'], 
@@ -624,14 +632,18 @@ def dataset_visualize(dataset, f, ranges, funcname, figpath):
     return
 
 range_func1 = [(0.1, 2), (0.1, 2)]
+# range_func1 = [(0.1, 10), (0.1, 10)]
+# range_func2 = [(-5, 5), (-math.pi, math.pi)]
 range_func2 = [(-2, 2), (-math.pi, math.pi)]
 range_func3 = [(-2, 2), (-math.pi, math.pi)]
 range_func4 = [(-math.pi, math.pi), (-math.pi, math.pi)]
 range_func5 = [(0, 2), (0, 2), (0.1, 2)]
 range_func6 = [(0.1, 1.5), (0, math.pi/2), (-math.pi/2, 0)]
+# range_func6 = [(0.1, 5), (0, 2 * math.pi), (-2 * math.pi, 0)]
 range_func7 = [(0, 2), (-math.pi, 0), (0, math.pi)]
 range_func8 = [(0, 1), (0, 1), (0, math.pi)]
 range_func9 = [(0, 1), (-1, 0), (-1, 0), (0, 1), (-1, 0), (0, 1)]
+# range_func9 = [(0, 5), (-2, 0), (-2, 0), (0, 2), (-2, 0), (0, 2)]
 range_func10 = [(0, 1), (0, 1)]
 range_func11 = [(0.1, 5), (0.1, 5)]
 range_func12 = [(0.1, 5), (0.1, 5), (0.1, 5)]
@@ -640,41 +652,41 @@ range_func14 = [(0, 2), (0, 2), (0, 2), (0, 2), (0, 2)]
 range_func15 = [(0, 1), (0, 1), (0.2, 2)]
 
 funcs2d = {
-    "func1": {"f": lambda x: func1(x), "range": range_func1, "parameters": {'lamb': 0.01, 'lamb_l1': 0.001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
-    "func2": {"f": lambda x: func2(x), "range": range_func2, "parameters": {'lamb': 0.01, 'lamb_l1': 0.001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
-    "func3": {"f": lambda x: func3(x), "range": range_func3, "parameters": {'lamb': 0.01, 'lamb_l1': 0.0001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
-    "func4": {"f": lambda x: func4(x), "range": range_func4, "parameters": {'lamb': 0.01, 'lamb_l1': 0.001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
-    "func10": {"f": lambda x: func10(x), "range": range_func10, "parameters": {'lamb': 0.01, 'lamb_l1': 0.001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
-    "func11": {"f": lambda x: func11(x), "range": range_func11, "parameters": {'lamb': 0.0, 'lamb_l1': 0.0, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
+    # "func1": {"f": lambda x: func1(x), "range": range_func1, "parameters": {'update_grid': True, 'grid_update_num': 10, 'stop_grid_update_step': 50, 'lamb': 0.01, 'lamb_l1': 0.001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
+    "func2": {"f": lambda x: func2(x), "range": range_func2, "parameters": {'update_grid': True, 'grid_update_num': 10, 'stop_grid_update_step': 50, 'lamb': 0.01, 'lamb_l1': 0.001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
+    # "func3": {"f": lambda x: func3(x), "range": range_func3, "parameters": {'update_grid': True, 'grid_update_num': 10, 'stop_grid_update_step': 50, 'lamb': 0.01, 'lamb_l1': 0.0001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
+    # "func4": {"f": lambda x: func4(x), "range": range_func4, "parameters": {'update_grid': True, 'grid_update_num': 10, 'stop_grid_update_step': 50, 'lamb': 0.01, 'lamb_l1': 0.001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
+    # "func10": {"f": lambda x: func10(x), "range": range_func10, "parameters": {'update_grid': True, 'grid_update_num': 10, 'stop_grid_update_step': 50, 'lamb': 0.01, 'lamb_l1': 0.001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
+    # "func11": {"f": lambda x: func11(x), "range": range_func11, "parameters": {'update_grid': True, 'grid_update_num': 10, 'stop_grid_update_step': 50, 'lamb': 0.0, 'lamb_l1': 0.0, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
 }
 
 funcs3d = {
-    # "func5": {"f": lambda x: func5(x), "range": range_func5, "parameters": {'lamb': 0.01, 'lamb_l1': 0.001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
-    "func6": {"f": lambda x: func6(x), "range": range_func6, "parameters": {'lamb': 0.01, 'lamb_l1': 0.0005, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
-    # "func7": {"f": lambda x: func7(x), "range": range_func7, "parameters": {'lamb': 0.01, 'lamb_l1': 0.0001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
-    # "func8": {"f": lambda x: func8(x), "range": range_func8, "parameters": {'lamb': 0.01, 'lamb_l1': 0.0005, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
-    # "func12": {"f": lambda x: func12(x), "range": range_func12, "parameters": {'lamb': 0.01, 'lamb_l1': 0.001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
-    # "func15": {"f": lambda x: func15(x), "range": range_func15, "parameters": {'lamb': 0.01, 'lamb_l1': 0.001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
+    # "func5": {"f": lambda x: func5(x), "range": range_func5, "parameters": {'update_grid': True, 'grid_update_num': 10, 'stop_grid_update_step': 50, 'lamb': 0.01, 'lamb_l1': 0.001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
+    "func6": {"f": lambda x: func6(x), "range": range_func6, "parameters": {'update_grid': True, 'grid_update_num': 10, 'stop_grid_update_step': 50, 'lamb': 0.01, 'lamb_l1': 0.0005, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
+    # "func7": {"f": lambda x: func7(x), "range": range_func7, "parameters": {'update_grid': True, 'grid_update_num': 10, 'stop_grid_update_step': 50, 'lamb': 0.01, 'lamb_l1': 0.0001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
+    # "func8": {"f": lambda x: func8(x), "range": range_func8, "parameters": {'update_grid': True, 'grid_update_num': 10, 'stop_grid_update_step': 50, 'lamb': 0.01, 'lamb_l1': 0.0005, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
+    # "func12": {"f": lambda x: func12(x), "range": range_func12, "parameters": {'update_grid': True, 'grid_update_num': 10, 'stop_grid_update_step': 50, 'lamb': 0.01, 'lamb_l1': 0.001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
+    # "func15": {"f": lambda x: func15(x), "range": range_func15, "parameters": {'update_grid': True, 'grid_update_num': 10, 'stop_grid_update_step': 50, 'lamb': 0.01, 'lamb_l1': 0.001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
 }
 
 funcs4d = {
-    "func13": {"f": lambda x: func13(x), "range": range_func13, "parameters": {'lamb': 0.01, 'lamb_l1': 0.001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
+    "func13": {"f": lambda x: func13(x), "range": range_func13, "parameters": {'update_grid': True, 'grid_update_num': 10, 'stop_grid_update_step': 50, 'lamb': 0.01, 'lamb_l1': 0.001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
 }
 
 funcs5d = {
-    "func14": {"f": lambda x: func14(x), "range": range_func14, "parameters": {'lamb': 0.01, 'lamb_l1': 0.001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
+    "func14": {"f": lambda x: func14(x), "range": range_func14, "parameters": {'update_grid': True, 'grid_update_num': 10, 'stop_grid_update_step': 50, 'lamb': 0.01, 'lamb_l1': 0.001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
 }
 
 funcs6d = {
-    "func9": {"f": lambda x: func9(x), "range": range_func9, "parameters": {'lamb': 0.01, 'lamb_l1': 0.001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
+    "func9": {"f": lambda x: func9(x), "range": range_func9, "parameters": {'update_grid': True, 'grid_update_num': 10, 'stop_grid_update_step': 50, 'lamb': 0.01, 'lamb_l1': 0.001, 'lamb_entropy': 0.0, 'lamb_coef': 0.0, 'lamb_coefdiff': 0.0}},
 }
 
 test_cases = {
     # "2d": (2, funcs2d),
     # "3d": (3, funcs3d),
     # "4d": (4, funcs4d),
-    "5d": (5, funcs5d),
-    # "6d": (6, funcs6d),
+    # "5d": (5, funcs5d),
+    "6d": (6, funcs6d),
 }
 
 if __name__ == "__main__":
@@ -715,10 +727,10 @@ if __name__ == "__main__":
                     parameters = func_dict["parameters"]
                     
                     start = time.time()
-                    model, data = kan_build(func, n_var=n_var, train_num=300000, test_num=10000, ranges=ranges, neurons=neurons, sample_method=sample_method, parameters=parameters)
+                    model, data = kan_build(func, n_var=n_var, train_num=100000, test_num=10000, ranges=ranges, neurons=neurons, sample_method=sample_method, parameters=parameters)
                     end = time.time()
 
-                    data_path = f"{KAN_MODEL_FOLDER}data/{func_name}.pkl"
+                    data_path = f"{KAN_MODEL_FOLDER}input_data/{func_name}.pkl"
                     with open(data_path, 'wb') as _f:
                         pickle.dump(data, _f)
 
